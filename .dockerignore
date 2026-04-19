@@ -3,6 +3,7 @@ dist
 build
 artifacts
 data/
+vivi-data/
 .env
 *.log
 .git

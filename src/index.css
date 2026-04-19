@@ -26,6 +26,14 @@ body,
 #root {
   height: var(--app-height);
   margin: 0;
+  /* Prevent the body from being scrolled/rubber-banded on iOS; the app manages
+     its own scrolling inside `--app-height`. Without this, the safe-area
+     padding below plus any child sized to `--app-height` made the body
+     slightly taller than the viewport, revealing the page background when
+     the user tried to scroll within the start-session form. */
+  overflow: hidden;
+  overscroll-behavior: none;
+  box-sizing: border-box;
 }
 
 body {
@@ -33,7 +41,8 @@ body {
 }
 
 /* Respect the notch / home-indicator only on narrow screens — desktop
-   browsers don't need the insets. */
+   browsers don't need the insets. With `box-sizing: border-box` above, these
+   paddings subtract from the body's fixed height instead of adding to it. */
 @media (max-width: 1023px) {
   body {
     padding-top: env(safe-area-inset-top);

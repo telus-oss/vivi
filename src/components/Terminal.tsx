@@ -279,6 +279,15 @@ export function Terminal({
 
       termRef.current = term;
 
+      // Expose a send hook for the on-screen MobileKeyToolbar. We overwrite the
+      // global on each mount so whichever Terminal is currently mounted owns it;
+      // cleanup below clears it so a stale reference never points at a dead WS.
+      window.__viviSendKey = (data: string) => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(data);
+        }
+      };
+
       term.onData((data: string) => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(data);
@@ -419,6 +428,9 @@ export function Terminal({
       if (pingWorkerRef.current) {
         pingWorkerRef.current.terminate();
         pingWorkerRef.current = null;
+      }
+      if (typeof window !== "undefined" && window.__viviSendKey) {
+        window.__viviSendKey = undefined;
       }
     };
   }, [mode, sessionId, refreshKey]);

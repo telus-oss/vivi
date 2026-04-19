@@ -22,6 +22,7 @@ import { PathInput } from "./components/PathInput";
 import { GitHubIssues } from "./components/GitHubIssues";
 import { GitHubSettings } from "./components/GitHubSettings";
 import { GitHubRepoPicker } from "./components/GitHubRepoPicker";
+import { MobileKeyToolbar } from "./components/MobileKeyToolbar";
 import { BackendSwitcher } from "./components/BackendSwitcher";
 import type { SessionState, HealthSnapshot, Profile, SecretRequest, SandboxImage, PortForward, GitHubRepoSelection } from "./lib/types";
 import * as api from "./lib/api";
@@ -489,10 +490,21 @@ export function App() {
   return (
     <div
       className="flex flex-col overflow-hidden"
-      style={{
-        height: "var(--app-height)",
-        ...(compactMode ? { zoom: 0.82 } : null),
-      }}
+      style={
+        compactMode
+          ? {
+              // "Landscape compact": lay out the UI as if the viewport were
+              // 1/0.82 ≈ 122% its real size, then CSS-zoom back down so the
+              // scaled render exactly fills the viewport. Net effect: content
+              // reflows at a larger virtual canvas, so more rows/columns of
+              // terminal + more of the panel are visible at once — which is
+              // what "tilt shrinks everything" is meant to buy you.
+              height: "calc(var(--app-height) / 0.82)",
+              width: "calc(100vw / 0.82)",
+              zoom: 0.82,
+            }
+          : { height: "var(--app-height)" }
+      }
     >
       {/* Update banner */}
       {updateAvailable && (
@@ -735,7 +747,7 @@ export function App() {
               )}
             </div>
           ) : (
-            <div className="flex-1 flex items-center justify-center p-8">
+            <div className="flex-1 overflow-y-auto flex items-start sm:items-center justify-center p-4 sm:p-8">
               <form onSubmit={handleStart} className="w-full max-w-lg space-y-5 p-6 bg-[var(--color-surface-raised)] rounded-xl border border-[var(--color-border)]">
                 <div className="text-center space-y-1"><h2 className="text-xl font-bold">Start Session</h2><p className="text-sm text-gray-400">Create a new sandbox or attach to a running container</p></div>
                 {error && (
@@ -1008,6 +1020,14 @@ export function App() {
           </div>
         )}
       </div>
+      {/* Virtual-keyboard control row — gives coding-agent TUIs the arrow /
+          escape / ctrl keys iOS & Android keyboards don't expose. Only
+          rendered while the on-screen keyboard is up and a terminal session
+          is actually attached. Sits at the bottom of the visual viewport,
+          which tracks the keyboard via `--app-height`. */}
+      {isSmallScreen && keyboardOpen && showTerminal && isRunning && !mobileTab && (
+        <MobileKeyToolbar />
+      )}
       {/* Mobile tab overlay */}
       {isMobile && mobileTab && (
         <div className="fixed inset-0 z-40 flex flex-col bg-[var(--color-surface)]">
