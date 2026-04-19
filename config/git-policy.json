@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "gitHosts": ["github.com", "api.github.com"],
+  "allowFetch": true,
+  "allowPush": false,
+  "allowPrCreation": true,
+  "protectedBranches": ["main", "master"],
+  "allowReadFromUpstream": true
+}

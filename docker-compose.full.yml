@@ -1,0 +1,82 @@
+# Full-stack Vivi — runs the app server, proxy, and dind as a single unit.
+#
+# Usage:
+#   docker compose -f docker-compose.full.yml up -d
+#
+# The UI will be available at http://localhost:7700
+# Connect to it from the PWA or any browser.
+#
+# Data (SQLite DB, staging, profiles) is persisted in ./vivi-data/ on the host.
+#
+# Environment variables:
+#   APP_PORT  — host port for the UI (default: 7700)
+#   HOST      — hostname for external access (default: 0.0.0.0)
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.app
+    ports:
+      - "${APP_PORT:-7700}:7700"
+    environment:
+      - PORT=7700
+      - HOST=${HOST:-0.0.0.0}
+      - CONTAINER_RUNTIME=docker
+      # Skip proxy/dind lifecycle — managed by this compose file
+      - MANAGED_COMPOSE=1
+      # HOST_DATA_DIR tells the server the host-side path for bind-mounts into
+      # sandbox containers, since /app/data inside the container doesn't exist on the host.
+      - HOST_DATA_DIR=${PWD}/vivi-data
+    volumes:
+      # Host bind-mount so paths are consistent between app container and host Docker
+      - ./vivi-data:/app/data
+      # Config shared between app (writes) and proxy (reads)
+      - ./vivi-data/config:/app/config
+      # The app launches sandbox containers on the HOST Docker daemon
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      proxy:
+        condition: service_healthy
+      dind:
+        condition: service_started
+    restart: unless-stopped
+
+  proxy:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.proxy
+    networks:
+      - sandbox
+      - default
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./vivi-data/config:/config:ro
+      - proxy-ca:/ca
+      - proxy-logs:/logs
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7443/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  dind:
+    image: docker:dind
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    ports:
+      - "127.0.0.1:2375:2375"
+    volumes:
+      - dind-storage:/var/lib/docker
+    restart: unless-stopped
+
+networks:
+  sandbox:
+    internal: true
+
+volumes:
+  proxy-ca:
+  proxy-logs:
+  dind-storage:

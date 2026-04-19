@@ -1,0 +1,56 @@
+# Vivi proxy orchestration
+#
+# The proxy container bridges the internal sandbox network to the internet,
+# providing MITM TLS interception, allowlist filtering, and API key injection.
+#
+# Sandbox containers are launched individually via `docker run` (managed by
+# server/container.ts) and attached to the `sandbox` network.
+
+services:
+  proxy:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.proxy
+    networks:
+      - sandbox
+      - default
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config:/config:ro
+      - proxy-ca:/ca
+      - proxy-logs:/logs
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7443/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # Shared Docker-in-Docker daemon for sandbox containers.
+  # Exposed only on loopback — sandboxes cannot reach it directly.
+  # Each sandbox connects via a per-session Unix socket proxy (server/docker-namespace-proxy.ts)
+  # which enforces session-label namespacing and blocks --privileged containers.
+  dind:
+    image: docker:dind
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    ports:
+      - "127.0.0.1:2375:2375"
+    volumes:
+      - dind-storage:/var/lib/docker
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "docker", "ps"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+networks:
+  sandbox:
+    internal: true
+
+volumes:
+  proxy-ca:
+  proxy-logs:
+  dind-storage:

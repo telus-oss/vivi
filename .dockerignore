@@ -1,0 +1,11 @@
+node_modules
+dist
+build
+artifacts
+data/
+.env
+*.log
+.git
+.github
+icon.iconset
+src-electrobun

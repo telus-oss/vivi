@@ -1,0 +1,10 @@
+node_modules
+dist
+build
+artifacts
+.env
+config/secrets.json
+config/allowlist.json
+data/
+vivi-data/
+*.log

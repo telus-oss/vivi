@@ -1,0 +1,55 @@
+{
+  "name": "vivi",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "predev": "node -e \"if(!process.env.npm_execpath?.includes('bun')){console.error('\\x1b[31m\\x1b[1mError: This project requires Bun (v1.3.5+).\\x1b[0m Install it: curl -fsSL https://bun.sh/install | bash\\nThen run: bun dev');process.exit(1)}\"",
+    "dev": "concurrently \"bun run --watch server/index.ts\" \"vite\"",
+    "dev:server": "bun run --watch server/index.ts",
+    "dev:ui": "vite",
+    "build": "vite build",
+    "build:docker": "docker compose build",
+    "docker:full": "docker compose -f docker-compose.full.yml up -d --build",
+    "docker:full:down": "docker compose -f docker-compose.full.yml down",
+    "start": "bun run server/index.ts",
+    "migrate": "bun run server/migrate.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.3.2",
+    "ghostty-web": "^0.4.0",
+    "http-proxy": "^1.18.1",
+    "lucide-react": "^0.545.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "uuid": "^11.1.0",
+    "ws": "^8.18.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.8",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/bun": "^1.2.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/http-proxy": "^1.17.16",
+    "@types/node": "^22.15.0",
+    "@types/react": "^19.1.6",
+    "@types/react-dom": "^19.1.6",
+    "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^4.5.2",
+    "concurrently": "^9.1.2",
+    "jsdom": "^29.0.1",
+    "tailwindcss": "^4.1.8",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "vitest": "^4.1.1"
+  },
+  "trustedDependencies": [
+    "esbuild"
+  ]
+}
