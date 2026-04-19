@@ -15,8 +15,63 @@
   --color-success: #3fb950;
 }
 
+:root {
+  /* Overwritten at runtime by useViewportHeight() to track visualViewport.height
+     on iOS so the UI doesn't sit underneath the on-screen keyboard. */
+  --app-height: 100dvh;
+}
+
+html,
+body,
+#root {
+  height: var(--app-height);
+  margin: 0;
+  /* Prevent the body from being scrolled/rubber-banded on iOS; the app manages
+     its own scrolling inside `--app-height`. Without this, the safe-area
+     padding below plus any child sized to `--app-height` made the body
+     slightly taller than the viewport, revealing the page background when
+     the user tried to scroll within the start-session form. */
+  overflow: hidden;
+  overscroll-behavior: none;
+  box-sizing: border-box;
+}
+
 body {
   font-family: var(--font-sans);
+}
+
+/* Respect the notch / home-indicator only on narrow screens — desktop
+   browsers don't need the insets. With `box-sizing: border-box` above, these
+   paddings subtract from the body's fixed height instead of adding to it. */
+@media (max-width: 1023px) {
+  body {
+    padding-top: env(safe-area-inset-top);
+    padding-right: env(safe-area-inset-right);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+  }
+}
+
+/* Landscape-compact: small screens turned sideways. Instead of a `zoom`
+   transform (which breaks `position: fixed` containing-block rules on
+   Safari and makes ghostty's measured rows mismatch the rendered pixel
+   height), shrink the root font-size a notch so rem-sized paddings and
+   font sizes throughout the app contract uniformly. The terminal canvas
+   is unaffected (it sets its own fontSize in pixels), so scrollback
+   geometry stays correct. */
+.mobile-compact {
+  font-size: 13px;
+}
+.mobile-compact .text-sm {
+  font-size: 0.75rem;
+}
+.mobile-compact .text-xs {
+  font-size: 0.65rem;
+}
+.mobile-compact button,
+.mobile-compact input,
+.mobile-compact select {
+  min-height: auto;
 }
 
 /* Scrollbar styling */

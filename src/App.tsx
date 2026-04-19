@@ -22,6 +22,7 @@ import { PathInput } from "./components/PathInput";
 import { GitHubIssues } from "./components/GitHubIssues";
 import { GitHubSettings } from "./components/GitHubSettings";
 import { GitHubRepoPicker } from "./components/GitHubRepoPicker";
+import { MobileKeyToolbar } from "./components/MobileKeyToolbar";
 import { BackendSwitcher } from "./components/BackendSwitcher";
 import type { SessionState, HealthSnapshot, Profile, SecretRequest, SandboxImage, PortForward, GitHubRepoSelection } from "./lib/types";
 import * as api from "./lib/api";
@@ -31,6 +32,7 @@ import { getPortForwardUrl } from "./lib/api";
 import { getRecentPaths, saveRecentPath } from "./lib/recentPaths";
 import { getPanelWidth, clampWidth, PANEL_WIDTH_KEY } from "./lib/panelResize";
 import { shouldShowRenameTip, markRenameTipSeen } from "./lib/renameTip";
+import { useViewportHeight } from "./lib/useViewportHeight";
 
 type Tab = "secrets" | "allowlist" | "profiles" | "images" | "diff" | "monitor" | "approvals" | "ports" | "docker" | "logs" | "branch-diff";
 
@@ -106,6 +108,8 @@ export function App() {
     try { return localStorage.getItem("mobile-landscape-split") === "true"; } catch (err) { console.warn("Failed to read mobile-landscape-split from localStorage:", err); return false; }
   });
   const isMobile = isSmallScreen && !(landscapeSplit && isLandscape);
+  const compactMode = isSmallScreen && isLandscape;
+  const { keyboardOpen } = useViewportHeight();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [mobileTab, setMobileTab] = useState<Tab | null>(null);
   const mobileMenuRef = useRef<HTMLDivElement>(null);
@@ -115,7 +119,11 @@ export function App() {
 
   const activeSession = sessions.find((s) => s.id === activeSessionId) || null;
   const isRunning = activeSession?.status === "running";
-  const alertCount = health?.alerts.length || 0;
+  // Monitor tab is disabled (see GLOBAL_TABS), so its alert badge has no
+  // destination — hide it by forcing alertCount to 0. Restore when the
+  // Monitor tab is re-enabled.
+  // const alertCount = health?.alerts.length || 0;
+  const alertCount = 0;
   const activePrCount = activeSessionId ? (pendingPrCounts[activeSessionId] || 0) : 0;
   const activePortCount = activeSessionId ? (portCounts[activeSessionId] || 0) : 0;
   const activeContainerCount = activeSessionId ? (containerCounts[activeSessionId] || 0) : 0;
@@ -398,8 +406,11 @@ export function App() {
     const measure = () => {
       const children = Array.from(container.children) as HTMLElement[];
       if (children.length === 0) { setVisibleTabCount(Infinity); return; }
-      // Reserve space for the burger/overflow button area: ~40px
-      const available = bar.clientWidth - 40;
+      // Reserve width for the always-present hamburger/overflow button plus a
+      // small gap. The actual rendered button is ~32 px (w-4 icon + p-1 + p-1);
+      // keep a generous margin so rounded widths never cause a one-pixel wrap.
+      const OVERFLOW_RESERVE = 44;
+      const available = bar.clientWidth - OVERFLOW_RESERVE;
       let total = 0;
       let count = 0;
       for (const child of children) {
@@ -407,13 +418,20 @@ export function App() {
         if (total > available) break;
         count++;
       }
+      // Guard against a negative available width (extremely narrow panel):
+      // send everything to the hamburger rather than leaving stale visibility.
+      if (available <= 0) count = 0;
       setVisibleTabCount(count);
     };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(bar);
     return () => ro.disconnect();
-  }, [tab]);
+    // Re-measure when the user drags the panel divider or enters compact
+    // (landscape-zoom) mode — ResizeObserver covers most cases but these two
+    // states change React's rendered tab count/width faster than the observer
+    // can fire reliably in Safari.
+  }, [tab, panelWidth, compactMode, hasSession]);
 
   const visiblePanelTabs = allPanelTabs.slice(0, visibleTabCount);
   const overflowPanelTabs = allPanelTabs.slice(visibleTabCount);
@@ -474,7 +492,10 @@ export function App() {
   }, []);
 
   return (
-    <div className="h-screen flex flex-col">
+    <div
+      className={`flex flex-col overflow-hidden ${compactMode ? "mobile-compact" : ""}`}
+      style={{ height: "var(--app-height)" }}
+    >
       {/* Update banner */}
       {updateAvailable && (
         <div className="flex items-center justify-between px-4 py-2 bg-blue-500/15 border-b border-blue-500/30">
@@ -685,7 +706,7 @@ export function App() {
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden" ref={flexContainerRef}>
+      <div className="flex flex-1 min-h-0 overflow-hidden" ref={flexContainerRef}>
         <div className="overflow-hidden flex flex-col" style={isMobile ? { flex: 1 } : tab ? { width: `${panelWidth}%` } : { flex: 1 }}>
           {loginMode ? (
             <div className="flex-1 flex flex-col relative">
@@ -716,7 +737,7 @@ export function App() {
               )}
             </div>
           ) : (
-            <div className="flex-1 flex items-center justify-center p-8">
+            <div className="flex-1 overflow-y-auto flex items-start sm:items-center justify-center p-4 sm:p-8">
               <form onSubmit={handleStart} className="w-full max-w-lg space-y-5 p-6 bg-[var(--color-surface-raised)] rounded-xl border border-[var(--color-border)]">
                 <div className="text-center space-y-1"><h2 className="text-xl font-bold">Start Session</h2><p className="text-sm text-gray-400">Create a new sandbox or attach to a running container</p></div>
                 {error && (
@@ -989,6 +1010,14 @@ export function App() {
           </div>
         )}
       </div>
+      {/* Virtual-keyboard control row — gives coding-agent TUIs the arrow /
+          escape / ctrl keys iOS & Android keyboards don't expose. Only
+          rendered while the on-screen keyboard is up and a terminal session
+          is actually attached. Sits at the bottom of the visual viewport,
+          which tracks the keyboard via `--app-height`. */}
+      {isSmallScreen && keyboardOpen && showTerminal && isRunning && !mobileTab && (
+        <MobileKeyToolbar />
+      )}
       {/* Mobile tab overlay */}
       {isMobile && mobileTab && (
         <div className="fixed inset-0 z-40 flex flex-col bg-[var(--color-surface)]">

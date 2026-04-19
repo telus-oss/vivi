@@ -50,6 +50,7 @@ export function Terminal({
 }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<GhosttyTerminal | null>(null);
+  const fitAddonRef = useRef<any>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resizeDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -58,12 +59,85 @@ export function Terminal({
   const keydownHandlerRef = useRef<((e: KeyboardEvent) => void) | null>(null);
   const pingWorkerRef = useRef<Worker | null>(null);
   const visibilityHandlerRef = useRef<(() => void) | null>(null);
+  const visualViewportHandlerRef = useRef<(() => void) | null>(null);
+  const touchHandlersRef = useRef<{
+    canvas: HTMLElement;
+    onTouchStart: (e: TouchEvent) => void;
+    onTouchMove: (e: TouchEvent) => void;
+    onTouchEnd: () => void;
+  } | null>(null);
   const pendingResizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const callbacksRef = useRef({ onConnected, onDisconnected });
   const [status, setStatus] = useState<Status>("disconnected");
   const [refreshKey, setRefreshKey] = useState(0);
+  void setRefreshKey; // preserved for emergency remount path if we ever need it
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [isSmallScreen, setIsSmallScreen] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(max-width: 1023px)").matches,
+  );
 
-  const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
+  // Track the iOS on-screen keyboard via visualViewport so we can show a
+  // dismiss hint on the status bar. The status bar itself is the blur target.
+  useEffect(() => {
+    const vv = typeof window !== "undefined" ? window.visualViewport : null;
+    if (!vv) return;
+    const check = () => setKeyboardOpen(window.innerHeight - vv.height > 120);
+    check();
+    // Only resize — see useViewportHeight.ts for why scroll must not drive
+    // layout or canvas refits.
+    vv.addEventListener("resize", check);
+    return () => {
+      vv.removeEventListener("resize", check);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(max-width: 1023px)");
+    const handler = (e: MediaQueryListEvent) => setIsSmallScreen(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+
+  // When the keyboard opens or closes the MobileKeyToolbar appears/disappears
+  // in the flex layout, which means the canvas container's available height
+  // changes. The ResizeObserver will eventually catch this, but on iOS Safari
+  // it can lag a frame or two — long enough for ghostty's canvas to paint
+  // below the toolbar before shrinking. Force a refit + scroll-to-bottom on
+  // the state transition so the visible viewport is always in sync.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      try { fitAddonRef.current?.fit(); } catch { /* container detached */ }
+      (termRef.current as any)?.scrollToBottom?.();
+    }, 150);
+    return () => clearTimeout(t);
+  }, [keyboardOpen]);
+
+  const dismissKeyboardIfMobile = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isSmallScreen) return;
+    // Ignore taps that land on actual interactive controls so the refresh
+    // button still works.
+    if ((e.target as HTMLElement).closest("button, a, input, select, textarea")) return;
+    const active = document.activeElement as HTMLElement | null;
+    if (active && typeof active.blur === "function") active.blur();
+  }, [isSmallScreen]);
+
+  // "Refresh" used to remount the whole terminal + reopen the WebSocket, which
+  // was slow and often left ghostty's canvas in a worse state than it started.
+  // In practice what the user wants is what a browser window resize triggers:
+  // re-measure the container, tell the PTY its new dimensions, redraw, and
+  // scroll to the latest line. Do exactly that.
+  const refresh = useCallback(() => {
+    const fit = fitAddonRef.current;
+    const term = termRef.current;
+    if (fit) {
+      try { fit.fit(); } catch { /* fit can throw if the container is detached mid-render */ }
+    }
+    if (term) {
+      (term as any).scrollToBottom?.();
+      (term as any).refresh?.(0, ((term as any).rows ?? 24) - 1);
+    }
+  }, []);
 
   callbacksRef.current = { onConnected, onDisconnected };
 
@@ -71,7 +145,7 @@ export function Terminal({
     let cancelled = false;
     let fatalError = false;
 
-    let fitAddonRef: any = null;
+    let fitAddonLocal: any = null;
 
     function connect(term: GhosttyTerminal) {
       if (cancelled || fatalError) return;
@@ -81,7 +155,7 @@ export function Terminal({
 
       // Get dimensions from the FitAddon which calculates them from the
       // actual DOM container size and font metrics — not hardcoded defaults.
-      const proposed = fitAddonRef?.proposeDimensions?.();
+      const proposed = fitAddonLocal?.proposeDimensions?.();
       const cols = proposed?.cols || (term as any).cols || 80;
       const rows = proposed?.rows || (term as any).rows || 24;
       const sessionParam = sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : "";
@@ -208,7 +282,8 @@ export function Terminal({
       });
 
       const fitAddon = new mod.FitAddon();
-      fitAddonRef = fitAddon;
+      fitAddonLocal = fitAddon;
+      fitAddonRef.current = fitAddon;
       term.loadAddon(fitAddon);
       term.open(containerRef.current);
       // Initial fit — may get wrong dimensions if flex layout hasn't settled.
@@ -218,15 +293,77 @@ export function Terminal({
 
       // Use a debounced ResizeObserver instead of fitAddon.observeResize() to
       // avoid the scroll-to-top flash that occurs when fit() is called mid-output.
-      resizeObserverRef.current = new ResizeObserver(() => {
+      const debouncedRefit = () => {
         if (resizeDebounce.current) clearTimeout(resizeDebounce.current);
         resizeDebounce.current = setTimeout(() => {
           fitAddon.fit();
+          // Re-anchor to the latest output after every fit — otherwise iOS
+          // keyboard open/close, orientation change, or panel resize can leave
+          // the last lines cut off with no way to scroll.
+          (term as any).scrollToBottom?.();
         }, 50);
-      });
+      };
+      resizeObserverRef.current = new ResizeObserver(debouncedRefit);
       resizeObserverRef.current.observe(containerRef.current!);
 
+      // iOS Safari: the DOM container doesn't resize when the on-screen keyboard
+      // opens — only the visual viewport shrinks. Hook that too so the terminal
+      // reflows above the keyboard.
+      const vv = typeof window !== "undefined" ? window.visualViewport : null;
+      if (vv) {
+        vv.addEventListener("resize", debouncedRefit);
+        visualViewportHandlerRef.current = debouncedRefit;
+      }
+
+      // Touch-to-scroll bridge: ghostty-web listens to wheel events for
+      // scrollback but not touch. On iOS/Android a swipe on the canvas
+      // bubbles up and scrolls whichever ancestor has overflow, rather than
+      // scrolling the terminal. Translate vertical touchmove into
+      // `term.scrollLines()` calls and eat the event so the page can't
+      // rubber-band.
+      const canvas = containerRef.current!;
+      let touchStartY: number | null = null;
+      let touchAccumulator = 0;
+      // Rough per-line pixel estimate. fontSize is 14 px; ghostty-web doesn't
+      // expose lineHeight directly, so use a conservative ~1.2x.
+      const LINE_PX = 17;
+      const onTouchStart = (e: TouchEvent) => {
+        if (e.touches.length !== 1) return;
+        touchStartY = e.touches[0].clientY;
+        touchAccumulator = 0;
+      };
+      const onTouchMove = (e: TouchEvent) => {
+        if (touchStartY == null || e.touches.length !== 1) return;
+        const y = e.touches[0].clientY;
+        touchAccumulator += touchStartY - y;
+        touchStartY = y;
+        const lines = Math.trunc(touchAccumulator / LINE_PX);
+        if (lines !== 0) {
+          touchAccumulator -= lines * LINE_PX;
+          (term as any).scrollLines?.(lines);
+          e.preventDefault();
+        }
+      };
+      const onTouchEnd = () => {
+        touchStartY = null;
+        touchAccumulator = 0;
+      };
+      canvas.addEventListener("touchstart", onTouchStart, { passive: true });
+      canvas.addEventListener("touchmove", onTouchMove, { passive: false });
+      canvas.addEventListener("touchend", onTouchEnd, { passive: true });
+      canvas.addEventListener("touchcancel", onTouchEnd, { passive: true });
+      touchHandlersRef.current = { canvas, onTouchStart, onTouchMove, onTouchEnd };
+
       termRef.current = term;
+
+      // Expose a send hook for the on-screen MobileKeyToolbar. We overwrite the
+      // global on each mount so whichever Terminal is currently mounted owns it;
+      // cleanup below clears it so a stale reference never points at a dead WS.
+      window.__viviSendKey = (data: string) => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(data);
+        }
+      };
 
       term.onData((data: string) => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -345,6 +482,18 @@ export function Terminal({
         document.removeEventListener("visibilitychange", visibilityHandlerRef.current);
         visibilityHandlerRef.current = null;
       }
+      if (visualViewportHandlerRef.current && typeof window !== "undefined" && window.visualViewport) {
+        window.visualViewport.removeEventListener("resize", visualViewportHandlerRef.current);
+        visualViewportHandlerRef.current = null;
+      }
+      if (touchHandlersRef.current) {
+        const { canvas, onTouchStart, onTouchMove, onTouchEnd } = touchHandlersRef.current;
+        canvas.removeEventListener("touchstart", onTouchStart);
+        canvas.removeEventListener("touchmove", onTouchMove);
+        canvas.removeEventListener("touchend", onTouchEnd);
+        canvas.removeEventListener("touchcancel", onTouchEnd);
+        touchHandlersRef.current = null;
+      }
       if (resizeObserverRef.current) {
         resizeObserverRef.current.disconnect();
         resizeObserverRef.current = null;
@@ -357,6 +506,7 @@ export function Terminal({
         termRef.current.dispose();
         termRef.current = null;
       }
+      fitAddonRef.current = null;
       // Clear container so old terminal content doesn't overlay the next session
       if (containerRef.current) {
         containerRef.current.innerHTML = "";
@@ -364,6 +514,9 @@ export function Terminal({
       if (pingWorkerRef.current) {
         pingWorkerRef.current.terminate();
         pingWorkerRef.current = null;
+      }
+      if (typeof window !== "undefined" && window.__viviSendKey) {
+        window.__viviSendKey = undefined;
       }
     };
   }, [mode, sessionId, refreshKey]);
@@ -374,8 +527,11 @@ export function Terminal({
   const containerKey = `${sessionId || mode}-${refreshKey}`;
 
   return (
-    <div className={`flex flex-col ${className || ""}`}>
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--color-border)] bg-[var(--color-surface-raised)]">
+    <div className={`flex flex-col min-h-0 ${className || ""}`}>
+      <div
+        onPointerUp={dismissKeyboardIfMobile}
+        className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--color-border)] bg-[var(--color-surface-raised)] cursor-pointer select-none"
+      >
         <div
           className={`h-2 w-2 rounded-full ${
             status === "connected"
@@ -394,6 +550,11 @@ export function Terminal({
                 ? "Error"
                 : "Disconnected"}
         </span>
+        {isSmallScreen && keyboardOpen && (
+          <span className="text-[10px] text-[var(--color-accent)] font-medium ml-2">
+            Tap here to close keyboard
+          </span>
+        )}
         <button
           onClick={refresh}
           className="ml-auto p-1 rounded text-gray-500 hover:text-gray-300 hover:bg-[var(--color-border)] transition-colors"
@@ -405,8 +566,16 @@ export function Terminal({
       <div
         key={containerKey}
         ref={containerRef}
-        className="flex-1 overflow-hidden"
-        style={{ backgroundColor: "#0d1117", minHeight: 400 }}
+        // `min-h-0` is required: without it, `min-height: auto` (the default
+        // on flex children) keeps the canvas at its ghostty-measured content
+        // height, which means when the MobileKeyToolbar appears below, the
+        // last rows are painted *behind* the toolbar and the user can't
+        // scroll to them because the fit addon thinks they're on-screen.
+        className="flex-1 min-h-0 overflow-hidden"
+        // `touch-action: none` tells the browser not to interpret any touch
+        // gesture on the canvas (pan / pinch-zoom) — our touchmove handler
+        // above forwards vertical swipes into ghostty's scrollback instead.
+        style={{ backgroundColor: "#0d1117", touchAction: "none" }}
       />
     </div>
   );

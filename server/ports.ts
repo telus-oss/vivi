@@ -9,6 +9,9 @@ import net from "node:net";
 import { spawn, type ChildProcess } from "node:child_process";
 import { getContainerName } from "./container.js";
 import { runtime } from "./runtime.js";
+import { makeProxyUrl, setServerPort } from "./proxyUrl.js";
+
+export { makeProxyUrl, setServerPort };
 
 export interface PortForward {
   sessionId: string;
@@ -48,20 +51,6 @@ function getPortBindAddress(): string {
   const host = process.env.HOST || "localhost";
   if (host === "localhost" || host === "127.0.0.1") return "127.0.0.1";
   return "0.0.0.0";
-}
-
-/** Server port for constructing proxy URLs. Set via setServerPort(). */
-let serverPort = parseInt(process.env.PORT || "7700", 10);
-
-/** Allow the main server to tell us what port it's running on. */
-export function setServerPort(port: number): void {
-  serverPort = port;
-}
-
-/** Build a full proxy URL for a port forward, using HOST env var. */
-function makeProxyUrl(subdomain: string): string {
-  const host = process.env.HOST || "localhost";
-  return `http://${subdomain}.${host}:${serverPort}`;
 }
 
 function makeKey(sessionId: string, containerPort: number): string {

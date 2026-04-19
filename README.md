@@ -49,7 +49,7 @@ Each session gets its own container. Run as many as you want.
 
 - **Multi-session** — independent sandboxes in separate tabs, each with their own container, git state, and terminal.
 - **Docker-in-Docker** — the agent can launch its own containers (dev servers, databases, build tools) with per-session namespace isolation.
-- **Port forwarding** — `open-port 3000` inside the sandbox creates a clickable localhost link in the UI. Works for both sandbox processes and DinD containers.
+- **Port forwarding** — `open-port 3000` inside the sandbox creates a clickable localhost link in the UI. Works for both sandbox processes and DinD containers. Set `PUBLIC_PORT_URL_BASE=https://your-domain.tld` to emit flat HTTPS links (`https://p-3000-{sessionPrefix}.your-domain.tld`) instead — handy behind Cloudflare tunnels where free Universal SSL only covers a single-level wildcard.
 - **Custom sandbox images** — register your own Docker images with pre-installed tools. Pick one per session or set a default.
 - **Profiles** — named Claude profiles that persist `~/.claude` state across sessions (memory, settings, project context).
 - **GitHub Issues integration** — launch sessions directly from issues. The issue description becomes the task.
