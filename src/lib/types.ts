@@ -192,3 +192,34 @@ export interface SandboxImage {
   isDefault: boolean;
   createdAt: string;
 }
+
+export interface GitHubAuthStatus {
+  configured: boolean;
+  login?: string;
+  scopes?: string[];
+  addedAt?: string;
+}
+
+export interface GitHubRepo {
+  owner: string;
+  name: string;
+  fullName: string;
+  description: string | null;
+  isPrivate: boolean;
+  defaultBranch: string;
+  pushedAt: string | null;
+  kind: "owned" | "org" | "starred";
+  cloneUrl: string;
+}
+
+export interface GitHubBranch {
+  name: string;
+  commitSha: string;
+  isDefault: boolean;
+}
+
+export interface GitHubRepoSelection {
+  owner: string;
+  name: string;
+  branch: string;
+}

@@ -108,7 +108,10 @@ function spawnPty(
   // Use a single streaming TextDecoder so multi-byte UTF-8 characters split
   // across chunks are reassembled correctly instead of producing garbage.
   const decoder = new TextDecoder("utf-8", { fatal: false });
-  const proc = Bun.spawn([cmd, ...args], {
+  // On Windows, Bun.spawn won't auto-resolve PATHEXT (e.g. "claude" → "claude.exe"),
+  // so resolve the absolute path up front. No-op on Unix if cmd is already a path.
+  const resolvedCmd = Bun.which(cmd) ?? cmd;
+  const proc = Bun.spawn([resolvedCmd, ...args], {
     terminal: {
       cols: opts.cols,
       rows: opts.rows,
@@ -120,7 +123,22 @@ function spawnPty(
     cwd: process.cwd(),
   });
 
-  const terminal = proc.terminal!;
+  const terminal = proc.terminal;
+  if (!terminal) {
+    // Bun.spawn returned without a PTY — usually because the command is not on PATH
+    // (e.g. `claude` CLI missing on the host). Kill the stub proc and surface a
+    // clean error instead of crashing the whole server on a later write/close.
+    try { proc.kill(); } catch { /* stub proc, may already be dead */ }
+    const isWin = process.platform === "win32";
+    throw new Error(
+      isWin
+        ? `Failed to spawn PTY for "${cmd}". Bun's PTY support is POSIX-only — ` +
+          `Vivi's terminal flows (login, in-session shell) don't work on Windows native. ` +
+          `Run Vivi inside WSL or on a Linux/macOS host.`
+        : `Failed to spawn PTY for "${cmd}". Command not found or exited immediately. ` +
+          `Is "${cmd}" installed and on PATH?`
+    );
+  }
 
   // Monitor process exit
   proc.exited.then((code: number) => {
@@ -131,8 +149,16 @@ function spawnPty(
   });
 
   const pty: BunPty = {
-    write(data: string) { terminal.write(data); },
-    resize(cols: number, rows: number) { terminal.resize(cols, rows); },
+    write(data: string) {
+      try { terminal.write(data); } catch (err: any) {
+        console.warn("[pty] Error writing to terminal:", err.message);
+      }
+    },
+    resize(cols: number, rows: number) {
+      try { terminal.resize(cols, rows); } catch (err: any) {
+        console.warn("[pty] Error resizing terminal:", err.message);
+      }
+    },
     kill() {
       try { terminal.close(); } catch (err: any) {
         console.warn("[pty] Error closing terminal:", err.message);
@@ -345,7 +371,10 @@ function handleTerminalConnection(ws: WebSocket, url: URL) {
       },
     );
   } catch (err: any) {
-    ws.send(JSON.stringify({ type: "error", message: `Failed to spawn PTY: ${err.message}` }));
+    // fatal: true prevents the client from auto-reconnecting and wiping the
+    // error message — a spawn failure (missing CLI, unsupported platform) will
+    // fail identically on retry, so the user needs time to read the reason.
+    ws.send(JSON.stringify({ type: "error", message: `Failed to spawn PTY: ${err.message}`, fatal: true }));
     ws.close();
     return;
   }

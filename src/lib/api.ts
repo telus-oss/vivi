@@ -17,7 +17,14 @@ export const getConfig = () => request<{ host: string }>("/config");
 
 // Sessions (multi-session)
 export const getSessions = () => request<import("./types").SessionState[]>("/sessions");
-export const startSession = (body: { repoPath?: string; attachTo?: string; taskDescription?: string; profileId?: string; imageId?: number }) =>
+export const startSession = (body: {
+  repoPath?: string;
+  attachTo?: string;
+  taskDescription?: string;
+  profileId?: string;
+  imageId?: number;
+  githubRepo?: import("./types").GitHubRepoSelection;
+}) =>
   request<import("./types").SessionState>("/sessions", { method: "POST", body: JSON.stringify(body) });
 export const stopSession = (id: string) => request<{ ok: boolean }>(`/sessions/${id}`, { method: "DELETE" });
 
@@ -138,6 +145,28 @@ export const getSessionContainers = (sessionId: string) =>
 // GitHub Issues
 export const getGitHubIssues = (repoPath: string) =>
   request<import("./types").GitHubIssuesResult>(`/github/issues?repoPath=${encodeURIComponent(repoPath)}`);
+
+// GitHub Auth + Repo Picker
+export const getGitHubStatus = () =>
+  request<import("./types").GitHubAuthStatus>("/github/status");
+export const saveGitHubToken = (token: string) =>
+  request<import("./types").GitHubAuthStatus>("/github/token", {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  });
+export const clearGitHubToken = () =>
+  request<{ ok: boolean }>("/github/token", { method: "DELETE" });
+export const listGitHubRepos = (search?: string, refresh?: boolean) => {
+  const params = new URLSearchParams();
+  if (search) params.set("search", search);
+  if (refresh) params.set("refresh", "1");
+  const qs = params.toString();
+  return request<import("./types").GitHubRepo[]>(`/github/repos${qs ? `?${qs}` : ""}`);
+};
+export const listGitHubBranches = (owner: string, repo: string) =>
+  request<import("./types").GitHubBranch[]>(
+    `/github/branches?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`,
+  );
 
 // Git Policy
 export const getGitPolicy = () => request<import("./types").GitPolicy>("/git/policy");

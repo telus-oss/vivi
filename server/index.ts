@@ -28,6 +28,7 @@ import * as ports from "./ports.js";
 import * as updater from "./updater.js";
 import { listSessionContainers, inspectContainer } from "./docker-namespace-proxy.js";
 import * as githubIssues from "./github-issues.js";
+import * as github from "./github.js";
 import * as profiles from "./profiles.js";
 import * as secretRequests from "./secret-requests.js";
 import rateLimit from "express-rate-limit";
@@ -75,6 +76,7 @@ const RATE_LIMITS = {
   monitor:         { windowMs: 1 * 60 * 1000, max: 120 },
   upload:          { windowMs: 1 * 60 * 1000, max: 20 },
   githubIssues:    { windowMs: 1 * 60 * 1000, max: 30 },
+  github:          { windowMs: 1 * 60 * 1000, max: 60 },
   profiles:        { windowMs: 1 * 60 * 1000, max: 60 },
   update:          { windowMs: 1 * 60 * 1000, max: 10 },
   sandboxImages:   { windowMs: 1 * 60 * 1000, max: 60 },
@@ -83,6 +85,10 @@ const RATE_LIMITS = {
 const limiter = (key: keyof typeof RATE_LIMITS) => rateLimit(RATE_LIMITS[key]);
 
 const app = express();
+// Behind cloudflared (boyhouse) the real client IP arrives via X-Forwarded-For.
+// Trust one proxy hop so express-rate-limit uses that IP for keying and doesn't
+// throw ERR_ERL_UNEXPECTED_X_FORWARDED_FOR on every request.
+app.set("trust proxy", 1);
 app.use(cors());
 app.use(express.json());
 
@@ -774,6 +780,55 @@ app.get("/api/github/issues", limiter("githubIssues"), (req, res) => {
   if (!repoPath) return res.status(400).json({ error: "repoPath is required" });
   const result = githubIssues.fetchGitHubIssues(repoPath);
   res.json(result);
+});
+
+// --- GitHub Auth + Repo Picker ---
+app.get("/api/github/status", limiter("github"), (_req, res) => {
+  res.json(github.status());
+});
+
+app.post("/api/github/token", limiter("github"), async (req, res) => {
+  const token = typeof req.body?.token === "string" ? req.body.token : "";
+  if (!token) return res.status(400).json({ error: "token is required" });
+  try {
+    const result = await github.saveToken(token);
+    github.invalidateRepoCache();
+    res.json({ configured: true, ...result });
+  } catch (err: any) {
+    const status = err instanceof github.GitHubAuthError ? err.status : 400;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+app.delete("/api/github/token", limiter("github"), (_req, res) => {
+  github.clearToken();
+  github.invalidateRepoCache();
+  res.json({ ok: true });
+});
+
+app.get("/api/github/repos", limiter("github"), async (req, res) => {
+  try {
+    const search = typeof req.query.search === "string" ? req.query.search : undefined;
+    const force = req.query.refresh === "1";
+    const repos = await github.listRepos({ search, force });
+    res.json(repos);
+  } catch (err: any) {
+    const status = err instanceof github.GitHubAuthError ? err.status : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+app.get("/api/github/branches", limiter("github"), async (req, res) => {
+  const owner = typeof req.query.owner === "string" ? req.query.owner : "";
+  const repo = typeof req.query.repo === "string" ? req.query.repo : "";
+  if (!owner || !repo) return res.status(400).json({ error: "owner and repo are required" });
+  try {
+    const branches = await github.listBranches(owner, repo);
+    res.json(branches);
+  } catch (err: any) {
+    const status = err instanceof github.GitHubAuthError ? err.status : 500;
+    res.status(status).json({ error: err.message });
+  }
 });
 
 // --- Profiles ---

@@ -4,7 +4,7 @@ import {
   AlertTriangle, X, Plus, PanelRightOpen, Loader2, Network,
   ArrowDownToLine, Container, RefreshCw, UserCircle, FileCode2,
   Settings, FolderGit2, ScrollText, Box, Maximize2, Minimize2, ExternalLink,
-  Menu, ChevronDown,
+  Menu, ChevronDown, Github,
 } from "lucide-react";
 import { Terminal } from "./components/Terminal";
 import { SecretManager } from "./components/SecretManager";
@@ -20,8 +20,10 @@ import { DiffView } from "./components/DiffView";
 import { LiveDiffView } from "./components/LiveDiffView";
 import { PathInput } from "./components/PathInput";
 import { GitHubIssues } from "./components/GitHubIssues";
+import { GitHubSettings } from "./components/GitHubSettings";
+import { GitHubRepoPicker } from "./components/GitHubRepoPicker";
 import { BackendSwitcher } from "./components/BackendSwitcher";
-import type { SessionState, HealthSnapshot, Profile, SecretRequest, SandboxImage, PortForward } from "./lib/types";
+import type { SessionState, HealthSnapshot, Profile, SecretRequest, SandboxImage, PortForward, GitHubRepoSelection } from "./lib/types";
 import * as api from "./lib/api";
 import { fetchHost } from "./lib/host";
 import { getWsBase } from "./lib/backend";
@@ -58,10 +60,17 @@ export function App() {
   const [pendingPrCounts, setPendingPrCounts] = useState<Record<string, number>>({});
   const [portCounts, setPortCounts] = useState<Record<string, number>>({});
   const [containerCounts, setContainerCounts] = useState<Record<string, number>>({});
-  const [form, setForm] = useState({ repoPath: "", taskDescription: "", profileId: "", imageId: "" });
+  const [form, setForm] = useState<{
+    repoPath: string;
+    taskDescription: string;
+    profileId: string;
+    imageId: string;
+    githubRepo: GitHubRepoSelection | null;
+  }>({ repoPath: "", taskDescription: "", profileId: "", imageId: "", githubRepo: null });
   const [availableProfiles, setAvailableProfiles] = useState<Profile[]>([]);
   const [sandboxImages, setSandboxImages] = useState<SandboxImage[]>([]);
-  const [sessionMode, setSessionMode] = useState<"new" | "attach">("new");
+  const [sessionMode, setSessionMode] = useState<"new" | "github" | "attach">("new");
+  const [githubConfigured, setGithubConfigured] = useState<boolean | null>(null);
   const [attachTarget, setAttachTarget] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
@@ -287,6 +296,9 @@ export function App() {
   useEffect(() => {
     if (showNewSessionForm || sessions.length === 0) {
       api.listProfiles().then(setAvailableProfiles).catch((err) => console.warn("Failed to fetch profiles:", err));
+      api.getGitHubStatus()
+        .then((s) => setGithubConfigured(s.configured))
+        .catch((err) => { console.warn("Failed to fetch github status:", err); setGithubConfigured(false); });
       api.listSandboxImages().then((images) => {
         setSandboxImages(images);
         const defaultImg = images.find(i => i.isDefault);
@@ -342,12 +354,19 @@ export function App() {
   const handleStart = async (e: React.FormEvent) => {
     e.preventDefault(); setError(null); setStarting(true);
     try {
+      const commonOpts = {
+        taskDescription: form.taskDescription || undefined,
+        profileId: form.profileId || undefined,
+        imageId: form.imageId ? Number(form.imageId) : undefined,
+      };
       const body = sessionMode === "attach" && attachTarget
         ? { attachTo: attachTarget }
-        : { repoPath: form.repoPath, taskDescription: form.taskDescription || undefined, profileId: form.profileId || undefined, imageId: form.imageId ? Number(form.imageId) : undefined };
+        : sessionMode === "github" && form.githubRepo
+          ? { githubRepo: form.githubRepo, ...commonOpts }
+          : { repoPath: form.repoPath, ...commonOpts };
       const s = await api.startSession(body);
       if (sessionMode === "new" && form.repoPath) saveRecentPath(form.repoPath);
-      setShowNewSessionForm(false); setActiveSessionId(s.id); setForm({ repoPath: "", taskDescription: "", profileId: "", imageId: "" }); setAttachTarget(null); refreshSessions();
+      setShowNewSessionForm(false); setActiveSessionId(s.id); setForm({ repoPath: "", taskDescription: "", profileId: "", imageId: "", githubRepo: null }); setAttachTarget(null); refreshSessions();
     } catch (err: any) { setError(err.message); } finally { setStarting(false); }
   };
 
@@ -731,8 +750,9 @@ export function App() {
                   )
                 )}
                 <div className="flex rounded-lg border border-[var(--color-border)] overflow-hidden">
-                  <button type="button" onClick={() => setSessionMode("new")} className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium transition-colors ${sessionMode === "new" ? "bg-[var(--color-accent-muted)] text-white" : "bg-[var(--color-surface)] text-gray-500 hover:text-gray-300"}`}><Plus className="w-4 h-4" />New Container</button>
-                  <button type="button" onClick={() => setSessionMode("attach")} disabled={runningSessions.length === 0} className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium transition-colors ${sessionMode === "attach" ? "bg-[var(--color-accent-muted)] text-white" : "bg-[var(--color-surface)] text-gray-500 hover:text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed"}`}><Container className="w-4 h-4" />Attach to Running</button>
+                  <button type="button" onClick={() => setSessionMode("new")} className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium transition-colors ${sessionMode === "new" ? "bg-[var(--color-accent-muted)] text-white" : "bg-[var(--color-surface)] text-gray-500 hover:text-gray-300"}`}><Plus className="w-4 h-4" />Local Path</button>
+                  <button type="button" onClick={() => setSessionMode("github")} className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium transition-colors border-l border-[var(--color-border)] ${sessionMode === "github" ? "bg-[var(--color-accent-muted)] text-white" : "bg-[var(--color-surface)] text-gray-500 hover:text-gray-300"}`}><Github className="w-4 h-4" />From GitHub</button>
+                  <button type="button" onClick={() => setSessionMode("attach")} disabled={runningSessions.length === 0} className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium transition-colors border-l border-[var(--color-border)] ${sessionMode === "attach" ? "bg-[var(--color-accent-muted)] text-white" : "bg-[var(--color-surface)] text-gray-500 hover:text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed"}`}><Container className="w-4 h-4" />Attach to Running</button>
                 </div>
                 {sessionMode === "new" ? (
                   <div className="space-y-4">
@@ -757,6 +777,22 @@ export function App() {
                       />
                     )}
                   </div>
+                ) : sessionMode === "github" ? (
+                  githubConfigured === null ? (
+                    <div className="flex items-center gap-2 text-sm text-gray-400 py-4"><Loader2 className="w-4 h-4 animate-spin" /> Checking GitHub connection...</div>
+                  ) : !githubConfigured ? (
+                    <div className="px-4 py-4 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg space-y-2 text-sm text-gray-300">
+                      <div className="flex items-center gap-2"><Github className="w-4 h-4 text-[var(--color-accent)]" /><span className="font-medium">Connect GitHub first</span></div>
+                      <p className="text-xs text-gray-400">Paste a Personal Access Token in the Secrets tab to import remote repositories.</p>
+                      <button type="button" onClick={() => setTab("secrets")} className="text-xs text-[var(--color-accent)] hover:underline">Open Secrets &rarr;</button>
+                    </div>
+                  ) : (
+                    <GitHubRepoPicker
+                      value={form.githubRepo}
+                      onChange={(sel) => setForm((f) => ({ ...f, githubRepo: sel }))}
+                      onNotConnected={() => setGithubConfigured(false)}
+                    />
+                  )
                 ) : (
                   <div className="space-y-2">
                     <span className="text-xs text-gray-400 block">Running Containers</span>
@@ -772,7 +808,7 @@ export function App() {
                     )}
                   </div>
                 )}
-                {sessionMode === "new" && availableProfiles.length > 0 && (
+                {sessionMode !== "attach" && availableProfiles.length > 0 && (
                   <div className="flex items-center gap-2">
                     <UserCircle className="w-3.5 h-3.5 text-gray-500 shrink-0" />
                     <select
@@ -787,7 +823,7 @@ export function App() {
                     </select>
                   </div>
                 )}
-                {sessionMode === "new" && sandboxImages.length > 0 && (
+                {sessionMode !== "attach" && sandboxImages.length > 0 && (
                   <div className="flex items-center gap-2">
                     <Box className="w-3.5 h-3.5 text-gray-500 shrink-0" />
                     <select
@@ -801,10 +837,10 @@ export function App() {
                     </select>
                   </div>
                 )}
-                <button type="submit" disabled={starting || (sessionMode === "new" && !form.repoPath) || (sessionMode === "attach" && !attachTarget)} className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-[var(--color-accent-muted)] hover:bg-[var(--color-accent)] disabled:opacity-50 text-white rounded-lg font-medium transition-colors">
-                  {starting ? <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />{sessionMode === "new" ? "Starting sandbox..." : "Attaching..."}</> : sessionMode === "new" ? <><Play className="w-4 h-4" />Launch Sandbox</> : <><Container className="w-4 h-4" />Attach Session</>}
+                <button type="submit" disabled={starting || (sessionMode === "new" && !form.repoPath) || (sessionMode === "github" && !form.githubRepo) || (sessionMode === "attach" && !attachTarget)} className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-[var(--color-accent-muted)] hover:bg-[var(--color-accent)] disabled:opacity-50 text-white rounded-lg font-medium transition-colors">
+                  {starting ? <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />{sessionMode === "attach" ? "Attaching..." : "Starting sandbox..."}</> : sessionMode === "attach" ? <><Container className="w-4 h-4" />Attach Session</> : <><Play className="w-4 h-4" />Launch Sandbox</>}
                 </button>
-                <p className="text-xs text-gray-500 text-center">{sessionMode === "new" ? "Make sure to add your Anthropic API key in the Secrets tab before starting." : "A new terminal session will connect to the selected container."}</p>
+                <p className="text-xs text-gray-500 text-center">{sessionMode === "attach" ? "A new terminal session will connect to the selected container." : "Make sure to add your Anthropic API key in the Secrets tab before starting."}</p>
               </form>
             </div>
           )}
@@ -931,7 +967,14 @@ export function App() {
                   <LiveDiffView sessionId={activeSessionId} />
                 ) : (
                   <div className="flex-1 overflow-auto p-5">
-                    {tab === "secrets" && <SecretManager onLoginStart={() => setLoginMode(true)} refreshKey={secretsRefreshKey} pendingRequests={secretRequests.filter((r) => r.status === "pending")} onDismissRequest={(id) => { api.dismissSecretRequest(id); setSecretRequests((prev) => prev.map((r) => r.id === id ? { ...r, status: "dismissed" as const } : r)); }} />}
+                    {tab === "secrets" && (
+                      <div className="space-y-6">
+                        <SecretManager onLoginStart={() => setLoginMode(true)} refreshKey={secretsRefreshKey} pendingRequests={secretRequests.filter((r) => r.status === "pending")} onDismissRequest={(id) => { api.dismissSecretRequest(id); setSecretRequests((prev) => prev.map((r) => r.id === id ? { ...r, status: "dismissed" as const } : r)); }} />
+                        <div className="pt-6 border-t border-[var(--color-border)]">
+                          <GitHubSettings onStatusChange={(s) => setGithubConfigured(s.configured)} />
+                        </div>
+                      </div>
+                    )}
                     {tab === "allowlist" && <Allowlist />}
                     {tab === "profiles" && <ProfileManager />}
                     {tab === "images" && <SandboxImages />}
@@ -978,7 +1021,14 @@ export function App() {
               <LiveDiffView sessionId={activeSessionId} />
             ) : (
               <div className="flex-1 overflow-auto p-4">
-                {mobileTab === "secrets" && <SecretManager onLoginStart={() => setLoginMode(true)} refreshKey={secretsRefreshKey} pendingRequests={secretRequests.filter((r) => r.status === "pending")} onDismissRequest={(id) => { api.dismissSecretRequest(id); setSecretRequests((prev) => prev.map((r) => r.id === id ? { ...r, status: "dismissed" as const } : r)); }} />}
+                {mobileTab === "secrets" && (
+                  <div className="space-y-6">
+                    <SecretManager onLoginStart={() => setLoginMode(true)} refreshKey={secretsRefreshKey} pendingRequests={secretRequests.filter((r) => r.status === "pending")} onDismissRequest={(id) => { api.dismissSecretRequest(id); setSecretRequests((prev) => prev.map((r) => r.id === id ? { ...r, status: "dismissed" as const } : r)); }} />
+                    <div className="pt-6 border-t border-[var(--color-border)]">
+                      <GitHubSettings onStatusChange={(s) => setGithubConfigured(s.configured)} />
+                    </div>
+                  </div>
+                )}
                 {mobileTab === "allowlist" && <Allowlist />}
                 {mobileTab === "profiles" && <ProfileManager />}
                 {mobileTab === "images" && <SandboxImages />}
