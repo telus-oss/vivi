@@ -50,6 +50,7 @@ export function Terminal({
 }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<GhosttyTerminal | null>(null);
+  const fitAddonRef = useRef<any>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resizeDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -63,6 +64,7 @@ export function Terminal({
   const callbacksRef = useRef({ onConnected, onDisconnected });
   const [status, setStatus] = useState<Status>("disconnected");
   const [refreshKey, setRefreshKey] = useState(0);
+  void setRefreshKey; // preserved for emergency remount path if we ever need it
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const [isSmallScreen, setIsSmallScreen] = useState(
     () => typeof window !== "undefined" && window.matchMedia("(max-width: 1023px)").matches,
@@ -100,7 +102,22 @@ export function Terminal({
     if (active && typeof active.blur === "function") active.blur();
   }, [isSmallScreen]);
 
-  const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
+  // "Refresh" used to remount the whole terminal + reopen the WebSocket, which
+  // was slow and often left ghostty's canvas in a worse state than it started.
+  // In practice what the user wants is what a browser window resize triggers:
+  // re-measure the container, tell the PTY its new dimensions, redraw, and
+  // scroll to the latest line. Do exactly that.
+  const refresh = useCallback(() => {
+    const fit = fitAddonRef.current;
+    const term = termRef.current;
+    if (fit) {
+      try { fit.fit(); } catch { /* fit can throw if the container is detached mid-render */ }
+    }
+    if (term) {
+      (term as any).scrollToBottom?.();
+      (term as any).refresh?.(0, ((term as any).rows ?? 24) - 1);
+    }
+  }, []);
 
   callbacksRef.current = { onConnected, onDisconnected };
 
@@ -108,7 +125,7 @@ export function Terminal({
     let cancelled = false;
     let fatalError = false;
 
-    let fitAddonRef: any = null;
+    let fitAddonLocal: any = null;
 
     function connect(term: GhosttyTerminal) {
       if (cancelled || fatalError) return;
@@ -118,7 +135,7 @@ export function Terminal({
 
       // Get dimensions from the FitAddon which calculates them from the
       // actual DOM container size and font metrics — not hardcoded defaults.
-      const proposed = fitAddonRef?.proposeDimensions?.();
+      const proposed = fitAddonLocal?.proposeDimensions?.();
       const cols = proposed?.cols || (term as any).cols || 80;
       const rows = proposed?.rows || (term as any).rows || 24;
       const sessionParam = sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : "";
@@ -245,7 +262,8 @@ export function Terminal({
       });
 
       const fitAddon = new mod.FitAddon();
-      fitAddonRef = fitAddon;
+      fitAddonLocal = fitAddon;
+      fitAddonRef.current = fitAddon;
       term.loadAddon(fitAddon);
       term.open(containerRef.current);
       // Initial fit — may get wrong dimensions if flex layout hasn't settled.
@@ -421,6 +439,7 @@ export function Terminal({
         termRef.current.dispose();
         termRef.current = null;
       }
+      fitAddonRef.current = null;
       // Clear container so old terminal content doesn't overlay the next session
       if (containerRef.current) {
         containerRef.current.innerHTML = "";
