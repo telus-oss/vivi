@@ -47,9 +47,15 @@ function KeyButton({ label, title, onPress, wide }: KeyButtonProps) {
 }
 
 export function MobileKeyToolbar() {
+  // Rendered as a flex-child of the root layout container, which itself is
+  // sized to `var(--app-height)` — i.e. the visual viewport (above the
+  // keyboard on iOS). As long as every ancestor on the way down from #root
+  // uses `overflow: hidden` + `overscroll-behavior: none`, this toolbar
+  // cannot be scrolled off-screen — it always sits at the bottom of the
+  // visible area, which is the top of the keyboard.
   return (
     <div
-      className="flex items-center gap-1.5 px-2 py-1.5 bg-[var(--color-surface)] border-t border-[var(--color-border)] overflow-x-auto"
+      className="shrink-0 flex items-center gap-1.5 px-2 py-1.5 bg-[var(--color-surface)] border-t border-[var(--color-border)] overflow-x-auto"
       // Prevent the toolbar itself from stealing focus — tapping a button
       // should not blur the terminal's hidden input.
       onPointerDown={(e) => e.preventDefault()}

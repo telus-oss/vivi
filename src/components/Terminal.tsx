@@ -60,6 +60,12 @@ export function Terminal({
   const pingWorkerRef = useRef<Worker | null>(null);
   const visibilityHandlerRef = useRef<(() => void) | null>(null);
   const visualViewportHandlerRef = useRef<(() => void) | null>(null);
+  const touchHandlersRef = useRef<{
+    canvas: HTMLElement;
+    onTouchStart: (e: TouchEvent) => void;
+    onTouchMove: (e: TouchEvent) => void;
+    onTouchEnd: () => void;
+  } | null>(null);
   const pendingResizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const callbacksRef = useRef({ onConnected, onDisconnected });
   const [status, setStatus] = useState<Status>("disconnected");
@@ -77,11 +83,11 @@ export function Terminal({
     if (!vv) return;
     const check = () => setKeyboardOpen(window.innerHeight - vv.height > 120);
     check();
+    // Only resize — see useViewportHeight.ts for why scroll must not drive
+    // layout or canvas refits.
     vv.addEventListener("resize", check);
-    vv.addEventListener("scroll", check);
     return () => {
       vv.removeEventListener("resize", check);
-      vv.removeEventListener("scroll", check);
     };
   }, []);
 
@@ -92,6 +98,20 @@ export function Terminal({
     mq.addEventListener("change", handler);
     return () => mq.removeEventListener("change", handler);
   }, []);
+
+  // When the keyboard opens or closes the MobileKeyToolbar appears/disappears
+  // in the flex layout, which means the canvas container's available height
+  // changes. The ResizeObserver will eventually catch this, but on iOS Safari
+  // it can lag a frame or two — long enough for ghostty's canvas to paint
+  // below the toolbar before shrinking. Force a refit + scroll-to-bottom on
+  // the state transition so the visible viewport is always in sync.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      try { fitAddonRef.current?.fit(); } catch { /* container detached */ }
+      (termRef.current as any)?.scrollToBottom?.();
+    }, 150);
+    return () => clearTimeout(t);
+  }, [keyboardOpen]);
 
   const dismissKeyboardIfMobile = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (!isSmallScreen) return;
@@ -295,6 +315,45 @@ export function Terminal({
         visualViewportHandlerRef.current = debouncedRefit;
       }
 
+      // Touch-to-scroll bridge: ghostty-web listens to wheel events for
+      // scrollback but not touch. On iOS/Android a swipe on the canvas
+      // bubbles up and scrolls whichever ancestor has overflow, rather than
+      // scrolling the terminal. Translate vertical touchmove into
+      // `term.scrollLines()` calls and eat the event so the page can't
+      // rubber-band.
+      const canvas = containerRef.current!;
+      let touchStartY: number | null = null;
+      let touchAccumulator = 0;
+      // Rough per-line pixel estimate. fontSize is 14 px; ghostty-web doesn't
+      // expose lineHeight directly, so use a conservative ~1.2x.
+      const LINE_PX = 17;
+      const onTouchStart = (e: TouchEvent) => {
+        if (e.touches.length !== 1) return;
+        touchStartY = e.touches[0].clientY;
+        touchAccumulator = 0;
+      };
+      const onTouchMove = (e: TouchEvent) => {
+        if (touchStartY == null || e.touches.length !== 1) return;
+        const y = e.touches[0].clientY;
+        touchAccumulator += touchStartY - y;
+        touchStartY = y;
+        const lines = Math.trunc(touchAccumulator / LINE_PX);
+        if (lines !== 0) {
+          touchAccumulator -= lines * LINE_PX;
+          (term as any).scrollLines?.(lines);
+          e.preventDefault();
+        }
+      };
+      const onTouchEnd = () => {
+        touchStartY = null;
+        touchAccumulator = 0;
+      };
+      canvas.addEventListener("touchstart", onTouchStart, { passive: true });
+      canvas.addEventListener("touchmove", onTouchMove, { passive: false });
+      canvas.addEventListener("touchend", onTouchEnd, { passive: true });
+      canvas.addEventListener("touchcancel", onTouchEnd, { passive: true });
+      touchHandlersRef.current = { canvas, onTouchStart, onTouchMove, onTouchEnd };
+
       termRef.current = term;
 
       // Expose a send hook for the on-screen MobileKeyToolbar. We overwrite the
@@ -427,6 +486,14 @@ export function Terminal({
         window.visualViewport.removeEventListener("resize", visualViewportHandlerRef.current);
         visualViewportHandlerRef.current = null;
       }
+      if (touchHandlersRef.current) {
+        const { canvas, onTouchStart, onTouchMove, onTouchEnd } = touchHandlersRef.current;
+        canvas.removeEventListener("touchstart", onTouchStart);
+        canvas.removeEventListener("touchmove", onTouchMove);
+        canvas.removeEventListener("touchend", onTouchEnd);
+        canvas.removeEventListener("touchcancel", onTouchEnd);
+        touchHandlersRef.current = null;
+      }
       if (resizeObserverRef.current) {
         resizeObserverRef.current.disconnect();
         resizeObserverRef.current = null;
@@ -460,7 +527,7 @@ export function Terminal({
   const containerKey = `${sessionId || mode}-${refreshKey}`;
 
   return (
-    <div className={`flex flex-col ${className || ""}`}>
+    <div className={`flex flex-col min-h-0 ${className || ""}`}>
       <div
         onPointerUp={dismissKeyboardIfMobile}
         className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--color-border)] bg-[var(--color-surface-raised)] cursor-pointer select-none"
@@ -499,8 +566,16 @@ export function Terminal({
       <div
         key={containerKey}
         ref={containerRef}
-        className="flex-1 overflow-hidden min-h-0"
-        style={{ backgroundColor: "#0d1117" }}
+        // `min-h-0` is required: without it, `min-height: auto` (the default
+        // on flex children) keeps the canvas at its ghostty-measured content
+        // height, which means when the MobileKeyToolbar appears below, the
+        // last rows are painted *behind* the toolbar and the user can't
+        // scroll to them because the fit addon thinks they're on-screen.
+        className="flex-1 min-h-0 overflow-hidden"
+        // `touch-action: none` tells the browser not to interpret any touch
+        // gesture on the canvas (pan / pinch-zoom) — our touchmove handler
+        // above forwards vertical swipes into ghostty's scrollback instead.
+        style={{ backgroundColor: "#0d1117", touchAction: "none" }}
       />
     </div>
   );

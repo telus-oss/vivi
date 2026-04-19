@@ -52,6 +52,28 @@ body {
   }
 }
 
+/* Landscape-compact: small screens turned sideways. Instead of a `zoom`
+   transform (which breaks `position: fixed` containing-block rules on
+   Safari and makes ghostty's measured rows mismatch the rendered pixel
+   height), shrink the root font-size a notch so rem-sized paddings and
+   font sizes throughout the app contract uniformly. The terminal canvas
+   is unaffected (it sets its own fontSize in pixels), so scrollback
+   geometry stays correct. */
+.mobile-compact {
+  font-size: 13px;
+}
+.mobile-compact .text-sm {
+  font-size: 0.75rem;
+}
+.mobile-compact .text-xs {
+  font-size: 0.65rem;
+}
+.mobile-compact button,
+.mobile-compact input,
+.mobile-compact select {
+  min-height: auto;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 8px;

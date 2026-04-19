@@ -24,9 +24,13 @@ export function useViewportHeight(): { keyboardOpen: boolean } {
 
     apply();
 
+    // Only drive layout off genuine resize events. `visualViewport.scroll`
+    // fires when the user scrolls inside the page or iOS rubber-bands after
+    // the keyboard opens; writing a new --app-height on every scroll tick
+    // thrashes the ghostty canvas and leaves a black strip where the
+    // terminal used to be.
     if (vv) {
       vv.addEventListener("resize", apply);
-      vv.addEventListener("scroll", apply);
     }
     window.addEventListener("orientationchange", apply);
     window.addEventListener("resize", apply);
@@ -34,7 +38,6 @@ export function useViewportHeight(): { keyboardOpen: boolean } {
     return () => {
       if (vv) {
         vv.removeEventListener("resize", apply);
-        vv.removeEventListener("scroll", apply);
       }
       window.removeEventListener("orientationchange", apply);
       window.removeEventListener("resize", apply);

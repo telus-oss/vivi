@@ -489,22 +489,8 @@ export function App() {
 
   return (
     <div
-      className="flex flex-col overflow-hidden"
-      style={
-        compactMode
-          ? {
-              // "Landscape compact": lay out the UI as if the viewport were
-              // 1/0.82 ≈ 122% its real size, then CSS-zoom back down so the
-              // scaled render exactly fills the viewport. Net effect: content
-              // reflows at a larger virtual canvas, so more rows/columns of
-              // terminal + more of the panel are visible at once — which is
-              // what "tilt shrinks everything" is meant to buy you.
-              height: "calc(var(--app-height) / 0.82)",
-              width: "calc(100vw / 0.82)",
-              zoom: 0.82,
-            }
-          : { height: "var(--app-height)" }
-      }
+      className={`flex flex-col overflow-hidden ${compactMode ? "mobile-compact" : ""}`}
+      style={{ height: "var(--app-height)" }}
     >
       {/* Update banner */}
       {updateAvailable && (
@@ -716,7 +702,7 @@ export function App() {
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden" ref={flexContainerRef}>
+      <div className="flex flex-1 min-h-0 overflow-hidden" ref={flexContainerRef}>
         <div className="overflow-hidden flex flex-col" style={isMobile ? { flex: 1 } : tab ? { width: `${panelWidth}%` } : { flex: 1 }}>
           {loginMode ? (
             <div className="flex-1 flex flex-col relative">
