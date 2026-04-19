@@ -119,7 +119,11 @@ export function App() {
 
   const activeSession = sessions.find((s) => s.id === activeSessionId) || null;
   const isRunning = activeSession?.status === "running";
-  const alertCount = health?.alerts.length || 0;
+  // Monitor tab is disabled (see GLOBAL_TABS), so its alert badge has no
+  // destination — hide it by forcing alertCount to 0. Restore when the
+  // Monitor tab is re-enabled.
+  // const alertCount = health?.alerts.length || 0;
+  const alertCount = 0;
   const activePrCount = activeSessionId ? (pendingPrCounts[activeSessionId] || 0) : 0;
   const activePortCount = activeSessionId ? (portCounts[activeSessionId] || 0) : 0;
   const activeContainerCount = activeSessionId ? (containerCounts[activeSessionId] || 0) : 0;
