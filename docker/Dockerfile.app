@@ -24,6 +24,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Claude Code CLI — required by the login / setup-token PTY flow.
+# The official installer drops the binary at ~/.local/bin/claude; symlink into
+# a globally-resolvable location so Bun.which("claude") inside the server finds it.
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+    && ln -sf /root/.local/bin/claude /usr/local/bin/claude
+
 WORKDIR /app
 
 # Copy built app from build stage

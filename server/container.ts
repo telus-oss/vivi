@@ -15,6 +15,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { getSandboxEnv } from "./secrets.js";
 import { closeAllPorts } from "./ports.js";
+import * as github from "./github.js";
 import db from "./db.js";
 import {
   startSessionProxy,
@@ -32,6 +33,17 @@ export interface SessionConfig {
   attachTo?: string;
   profileId?: string;
   imageId?: number;
+  /**
+   * When set, Vivi clones this GitHub repo into the session's staging dir
+   * (using the host-wide PAT configured in the Secrets tab) and uses that
+   * clone as the source for the normal bundle → container flow. `repoPath`
+   * is ignored in this mode.
+   */
+  githubRepo?: {
+    owner: string;
+    name: string;
+    branch: string;
+  };
 }
 
 export interface SessionState {
@@ -84,29 +96,59 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
     return attachSession(config.attachTo);
   }
 
-  if (!config.repoPath) {
-    throw new Error("repoPath is required when creating a new container");
+  if (!config.repoPath && !config.githubRepo) {
+    throw new Error("repoPath or githubRepo is required when creating a new container");
   }
 
-  const repoPath = path.resolve(config.repoPath);
-  if (!fs.existsSync(repoPath)) {
+  if (config.githubRepo && !github.getAuth()) {
     throw new Error(
-      `Path not found\n\n` +
-      `The directory does not exist:\n${repoPath}\n\n` +
-      `Check the path and try again.`
-    );
-  }
-  if (!fs.existsSync(path.join(repoPath, ".git"))) {
-    throw new Error(
-      `Not a git repository\n\n` +
-      `No .git directory found in:\n${repoPath}\n\n` +
-      `Make sure you're pointing to the root of a git repository, not a subdirectory.`
+      `GitHub is not connected\n\n` +
+      `Configure a Personal Access Token in the Secrets tab before importing a remote repository.`
     );
   }
 
   const id = crypto.randomUUID().slice(0, 12);
   const branch = `claude/sandbox-${Date.now()}`;
-  const repoName = path.basename(repoPath);
+
+  // When importing from GitHub, clone into the session staging dir and use
+  // that clone as the source repo for the rest of the startup flow.
+  let repoPath: string;
+  let repoName: string;
+  let precomputedRemoteUrl: string | null = null;
+
+  if (config.githubRepo) {
+    const { owner, name, branch: srcBranch } = config.githubRepo;
+    const sessionStagingDir = path.join(STAGING_DIR, id);
+    fs.mkdirSync(sessionStagingDir, { recursive: true });
+    const cloneDir = path.join(sessionStagingDir, "source");
+    console.log(`[container:${id}] Cloning GitHub repo ${owner}/${name}@${srcBranch} into ${cloneDir}`);
+    const { originUrl } = github.cloneRepo({
+      owner,
+      name,
+      branch: srcBranch,
+      destDir: cloneDir,
+    });
+    repoPath = cloneDir;
+    repoName = name;
+    precomputedRemoteUrl = originUrl;
+  } else {
+    repoPath = path.resolve(config.repoPath!);
+    if (!fs.existsSync(repoPath)) {
+      throw new Error(
+        `Path not found\n\n` +
+        `The directory does not exist:\n${repoPath}\n\n` +
+        `Check the path and try again.`
+      );
+    }
+    if (!fs.existsSync(path.join(repoPath, ".git"))) {
+      throw new Error(
+        `Not a git repository\n\n` +
+        `No .git directory found in:\n${repoPath}\n\n` +
+        `Make sure you're pointing to the root of a git repository, not a subdirectory.`
+      );
+    }
+    repoName = path.basename(repoPath);
+  }
 
   const session: SessionState = {
     id,
@@ -133,14 +175,18 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
     });
     console.log(`[container:${id}] Created git bundle at`, bundlePath);
 
-    let remoteUrl = "";
-    try {
-      remoteUrl = execSync("git remote get-url origin", {
-        cwd: repoPath, encoding: "utf-8", timeout: 5_000,
-      }).trim();
-      console.log(`[container:${id}] Remote URL:`, remoteUrl);
-    } catch {
-      console.log(`[container:${id}] No git remote found (fetch won't work in sandbox)`);
+    let remoteUrl = precomputedRemoteUrl ?? "";
+    if (!remoteUrl) {
+      try {
+        remoteUrl = execSync("git remote get-url origin", {
+          cwd: repoPath, encoding: "utf-8", timeout: 5_000,
+        }).trim();
+        console.log(`[container:${id}] Remote URL:`, remoteUrl);
+      } catch {
+        console.log(`[container:${id}] No git remote found (fetch won't work in sandbox)`);
+      }
+    } else {
+      console.log(`[container:${id}] Remote URL (from GitHub import):`, remoteUrl);
     }
 
     // Read host git identity so sandbox commits are attributed to the real user

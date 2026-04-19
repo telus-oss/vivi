@@ -14,6 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { getContainerName, getSession } from "./container.js";
 import { runtime } from "./runtime.js";
+import * as github from "./github.js";
 
 export interface PrRequest {
   id: string;
@@ -216,10 +217,39 @@ export async function approvePr(
       pr.status = "completed";
       pr.result = { action: "pull_local" };
     } else {
-      // Push branch and create GitHub PR
-      execFileSync("git", ["push", "origin", pr.branch], {
-        cwd: session.repoPath, stdio: "pipe", timeout: 30_000,
-      });
+      // If the origin points to github.com and the user has stored a PAT,
+      // use it for both the push (one-shot via explicit URL) and `gh pr create`
+      // (via GH_TOKEN env). This enables headless Vivi hosts (no interactive
+      // `gh auth login`) and covers GitHub-imported sessions whose staging
+      // clone has an un-authed remote.
+      const ghAuth = github.getAuth();
+      let originRemote = "";
+      try {
+        originRemote = execFileSync("git", ["-C", session.repoPath, "remote", "get-url", "origin"], {
+          encoding: "utf-8", stdio: "pipe", timeout: 5_000,
+        }).trim();
+      } catch {
+        // no origin — push below will fail with a clear error
+      }
+      const ghMatch = originRemote ? github.parseGitHubRemote(originRemote) : null;
+      const useStoredToken = !!(ghAuth && ghMatch);
+
+      const pushTarget = useStoredToken && ghMatch && ghAuth
+        ? github.authedCloneUrl(ghMatch.owner, ghMatch.name, ghAuth.token)
+        : "origin";
+
+      try {
+        execFileSync("git", ["push", pushTarget, pr.branch], {
+          cwd: session.repoPath, stdio: "pipe", timeout: 30_000,
+        });
+      } catch (err: any) {
+        // Scrub any token that leaked into stderr before rethrowing.
+        if (useStoredToken && ghAuth) {
+          const scrubbed = (err.stderr?.toString() || err.message || "").replace(ghAuth.token, "***");
+          throw new Error(`git push failed: ${scrubbed}`);
+        }
+        throw err;
+      }
 
       // Build full PR body — use custom description if provided, otherwise agent's
       const prBody = customDescription ?? pr.description ?? "";
@@ -235,7 +265,14 @@ export async function approvePr(
         prUrl = execFileSync(
           "gh",
           ["pr", "create", "--base", pr.baseBranch, "--head", pr.branch, "--title", pr.title, "--body-file", bodyFile],
-          { cwd: session.repoPath, encoding: "utf-8", timeout: 30_000 },
+          {
+            cwd: session.repoPath,
+            encoding: "utf-8",
+            timeout: 30_000,
+            env: useStoredToken && ghAuth
+              ? { ...process.env, GH_TOKEN: ghAuth.token }
+              : process.env,
+          },
         ).trim();
       } finally {
         try { fs.unlinkSync(bodyFile); } catch (err: any) {
