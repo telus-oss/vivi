@@ -2,6 +2,7 @@
   "name": "vivi",
   "private": true,
   "type": "module",
+  "license": "MIT",
   "scripts": {
     "predev": "node -e \"if(!process.env.npm_execpath?.includes('bun')){console.error('\\x1b[31m\\x1b[1mError: This project requires Bun (v1.3.5+).\\x1b[0m Install it: curl -fsSL https://bun.sh/install | bash\\nThen run: bun dev');process.exit(1)}\"",
     "dev": "concurrently \"bun run --watch server/index.ts\" \"vite\"",
