@@ -31,6 +31,7 @@ import { getPortForwardUrl } from "./lib/api";
 import { getRecentPaths, saveRecentPath } from "./lib/recentPaths";
 import { getPanelWidth, clampWidth, PANEL_WIDTH_KEY } from "./lib/panelResize";
 import { shouldShowRenameTip, markRenameTipSeen } from "./lib/renameTip";
+import { useViewportHeight } from "./lib/useViewportHeight";
 
 type Tab = "secrets" | "allowlist" | "profiles" | "images" | "diff" | "monitor" | "approvals" | "ports" | "docker" | "logs" | "branch-diff";
 
@@ -106,6 +107,8 @@ export function App() {
     try { return localStorage.getItem("mobile-landscape-split") === "true"; } catch (err) { console.warn("Failed to read mobile-landscape-split from localStorage:", err); return false; }
   });
   const isMobile = isSmallScreen && !(landscapeSplit && isLandscape);
+  const compactMode = isSmallScreen && isLandscape;
+  const { keyboardOpen } = useViewportHeight();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [mobileTab, setMobileTab] = useState<Tab | null>(null);
   const mobileMenuRef = useRef<HTMLDivElement>(null);
@@ -398,8 +401,11 @@ export function App() {
     const measure = () => {
       const children = Array.from(container.children) as HTMLElement[];
       if (children.length === 0) { setVisibleTabCount(Infinity); return; }
-      // Reserve space for the burger/overflow button area: ~40px
-      const available = bar.clientWidth - 40;
+      // Reserve width for the always-present hamburger/overflow button plus a
+      // small gap. The actual rendered button is ~32 px (w-4 icon + p-1 + p-1);
+      // keep a generous margin so rounded widths never cause a one-pixel wrap.
+      const OVERFLOW_RESERVE = 44;
+      const available = bar.clientWidth - OVERFLOW_RESERVE;
       let total = 0;
       let count = 0;
       for (const child of children) {
@@ -407,13 +413,20 @@ export function App() {
         if (total > available) break;
         count++;
       }
+      // Guard against a negative available width (extremely narrow panel):
+      // send everything to the hamburger rather than leaving stale visibility.
+      if (available <= 0) count = 0;
       setVisibleTabCount(count);
     };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(bar);
     return () => ro.disconnect();
-  }, [tab]);
+    // Re-measure when the user drags the panel divider or enters compact
+    // (landscape-zoom) mode — ResizeObserver covers most cases but these two
+    // states change React's rendered tab count/width faster than the observer
+    // can fire reliably in Safari.
+  }, [tab, panelWidth, compactMode, hasSession]);
 
   const visiblePanelTabs = allPanelTabs.slice(0, visibleTabCount);
   const overflowPanelTabs = allPanelTabs.slice(visibleTabCount);
@@ -474,7 +487,13 @@ export function App() {
   }, []);
 
   return (
-    <div className="h-screen flex flex-col">
+    <div
+      className="flex flex-col overflow-hidden"
+      style={{
+        height: "var(--app-height)",
+        ...(compactMode ? { zoom: 0.82 } : null),
+      }}
+    >
       {/* Update banner */}
       {updateAvailable && (
         <div className="flex items-center justify-between px-4 py-2 bg-blue-500/15 border-b border-blue-500/30">

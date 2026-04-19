@@ -58,10 +58,47 @@ export function Terminal({
   const keydownHandlerRef = useRef<((e: KeyboardEvent) => void) | null>(null);
   const pingWorkerRef = useRef<Worker | null>(null);
   const visibilityHandlerRef = useRef<(() => void) | null>(null);
+  const visualViewportHandlerRef = useRef<(() => void) | null>(null);
   const pendingResizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const callbacksRef = useRef({ onConnected, onDisconnected });
   const [status, setStatus] = useState<Status>("disconnected");
   const [refreshKey, setRefreshKey] = useState(0);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [isSmallScreen, setIsSmallScreen] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(max-width: 1023px)").matches,
+  );
+
+  // Track the iOS on-screen keyboard via visualViewport so we can show a
+  // dismiss hint on the status bar. The status bar itself is the blur target.
+  useEffect(() => {
+    const vv = typeof window !== "undefined" ? window.visualViewport : null;
+    if (!vv) return;
+    const check = () => setKeyboardOpen(window.innerHeight - vv.height > 120);
+    check();
+    vv.addEventListener("resize", check);
+    vv.addEventListener("scroll", check);
+    return () => {
+      vv.removeEventListener("resize", check);
+      vv.removeEventListener("scroll", check);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(max-width: 1023px)");
+    const handler = (e: MediaQueryListEvent) => setIsSmallScreen(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+
+  const dismissKeyboardIfMobile = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isSmallScreen) return;
+    // Ignore taps that land on actual interactive controls so the refresh
+    // button still works.
+    if ((e.target as HTMLElement).closest("button, a, input, select, textarea")) return;
+    const active = document.activeElement as HTMLElement | null;
+    if (active && typeof active.blur === "function") active.blur();
+  }, [isSmallScreen]);
 
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
 
@@ -218,13 +255,27 @@ export function Terminal({
 
       // Use a debounced ResizeObserver instead of fitAddon.observeResize() to
       // avoid the scroll-to-top flash that occurs when fit() is called mid-output.
-      resizeObserverRef.current = new ResizeObserver(() => {
+      const debouncedRefit = () => {
         if (resizeDebounce.current) clearTimeout(resizeDebounce.current);
         resizeDebounce.current = setTimeout(() => {
           fitAddon.fit();
+          // Re-anchor to the latest output after every fit — otherwise iOS
+          // keyboard open/close, orientation change, or panel resize can leave
+          // the last lines cut off with no way to scroll.
+          (term as any).scrollToBottom?.();
         }, 50);
-      });
+      };
+      resizeObserverRef.current = new ResizeObserver(debouncedRefit);
       resizeObserverRef.current.observe(containerRef.current!);
+
+      // iOS Safari: the DOM container doesn't resize when the on-screen keyboard
+      // opens — only the visual viewport shrinks. Hook that too so the terminal
+      // reflows above the keyboard.
+      const vv = typeof window !== "undefined" ? window.visualViewport : null;
+      if (vv) {
+        vv.addEventListener("resize", debouncedRefit);
+        visualViewportHandlerRef.current = debouncedRefit;
+      }
 
       termRef.current = term;
 
@@ -345,6 +396,10 @@ export function Terminal({
         document.removeEventListener("visibilitychange", visibilityHandlerRef.current);
         visibilityHandlerRef.current = null;
       }
+      if (visualViewportHandlerRef.current && typeof window !== "undefined" && window.visualViewport) {
+        window.visualViewport.removeEventListener("resize", visualViewportHandlerRef.current);
+        visualViewportHandlerRef.current = null;
+      }
       if (resizeObserverRef.current) {
         resizeObserverRef.current.disconnect();
         resizeObserverRef.current = null;
@@ -375,7 +430,10 @@ export function Terminal({
 
   return (
     <div className={`flex flex-col ${className || ""}`}>
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--color-border)] bg-[var(--color-surface-raised)]">
+      <div
+        onPointerUp={dismissKeyboardIfMobile}
+        className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--color-border)] bg-[var(--color-surface-raised)] cursor-pointer select-none"
+      >
         <div
           className={`h-2 w-2 rounded-full ${
             status === "connected"
@@ -394,6 +452,11 @@ export function Terminal({
                 ? "Error"
                 : "Disconnected"}
         </span>
+        {isSmallScreen && keyboardOpen && (
+          <span className="text-[10px] text-[var(--color-accent)] font-medium ml-2">
+            Tap here to close keyboard
+          </span>
+        )}
         <button
           onClick={refresh}
           className="ml-auto p-1 rounded text-gray-500 hover:text-gray-300 hover:bg-[var(--color-border)] transition-colors"
@@ -405,8 +468,8 @@ export function Terminal({
       <div
         key={containerKey}
         ref={containerRef}
-        className="flex-1 overflow-hidden"
-        style={{ backgroundColor: "#0d1117", minHeight: 400 }}
+        className="flex-1 overflow-hidden min-h-0"
+        style={{ backgroundColor: "#0d1117" }}
       />
     </div>
   );

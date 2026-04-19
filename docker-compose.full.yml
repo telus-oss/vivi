@@ -9,8 +9,15 @@
 # Data (SQLite DB, staging, profiles) is persisted in ./vivi-data/ on the host.
 #
 # Environment variables:
-#   APP_PORT  — host port for the UI (default: 7700)
-#   HOST      — hostname for external access (default: 0.0.0.0)
+#   APP_PORT              — host port for the UI (default: 7700)
+#   HOST                  — hostname for external access (default: 0.0.0.0)
+#   PUBLIC_PORT_URL_BASE  — optional base URL for port-forward links. When set,
+#                           emitted port URLs become
+#                           https://p-{containerPort}-{sessionPrefix}.{base-host}
+#                           instead of http://...:{PORT}. Useful behind
+#                           Cloudflare tunnels where Universal SSL only covers
+#                           a single-level wildcard. Example:
+#                             PUBLIC_PORT_URL_BASE=https://friendzi.xyz
 
 services:
   app:
@@ -22,6 +29,7 @@ services:
     environment:
       - PORT=7700
       - HOST=${HOST:-0.0.0.0}
+      - PUBLIC_PORT_URL_BASE=${PUBLIC_PORT_URL_BASE:-}
       - CONTAINER_RUNTIME=docker
       # Skip proxy/dind lifecycle — managed by this compose file
       - MANAGED_COMPOSE=1

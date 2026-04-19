@@ -15,8 +15,32 @@
   --color-success: #3fb950;
 }
 
+:root {
+  /* Overwritten at runtime by useViewportHeight() to track visualViewport.height
+     on iOS so the UI doesn't sit underneath the on-screen keyboard. */
+  --app-height: 100dvh;
+}
+
+html,
+body,
+#root {
+  height: var(--app-height);
+  margin: 0;
+}
+
 body {
   font-family: var(--font-sans);
+}
+
+/* Respect the notch / home-indicator only on narrow screens — desktop
+   browsers don't need the insets. */
+@media (max-width: 1023px) {
+  body {
+    padding-top: env(safe-area-inset-top);
+    padding-right: env(safe-area-inset-right);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+  }
 }
 
 /* Scrollbar styling */
