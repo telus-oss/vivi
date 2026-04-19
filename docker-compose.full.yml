@@ -57,6 +57,15 @@ services:
     networks:
       - sandbox
       - default
+    environment:
+      # Route sandbox traffic to the app container over the shared `default`
+      # network instead of bouncing out through `host.docker.internal` and
+      # back in via the published host port. The host-gateway hop depends on
+      # docker-bridge ↔ custom-bridge iptables rules, which on some Ubuntu
+      # hosts (boyhouse) black-hole the packet and we see
+      # `connect ETIMEDOUT 172.17.0.1:7700` for every `open-port` /
+      # `gh pr create` interception.
+      - HOST_SERVER=app:7700
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
