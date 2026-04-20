@@ -1,0 +1,203 @@
+name: release
+
+# Triggered on semver tag push (v*). Builds and publishes:
+#   - ghcr.io/OWNER/vivi-app    linux/amd64 + linux/arm64
+#   - ghcr.io/OWNER/vivi-proxy  linux/amd64 + linux/arm64
+#   - ghcr.io/OWNER/vivi-sandbox linux/amd64 + linux/arm64
+#   - vivi CLI binaries for linux x64/arm64, macos arm64/intel, windows x64
+#   - docker-compose.yml + SHA256SUMS as release assets
+#
+# All third-party actions are pinned to commit SHAs. When bumping, update both
+# the SHA and the trailing version comment.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag to build (e.g. v0.0.1). Only use for manual re-runs."
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  # -----------------------------------------------------------------------
+  # Build and push one image per `target` to GHCR. Multi-arch via buildx.
+  # -----------------------------------------------------------------------
+  images:
+    name: image (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [app, proxy, sandbox]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/vivi-${{ matrix.target }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ !contains(github.ref, '-') }}
+
+      - name: Build and push
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          file: docker/Dockerfile.${{ matrix.target }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
+
+  # -----------------------------------------------------------------------
+  # Build the vivi CLI natively on each target OS/arch.
+  # Cross-builds are skipped — runners are native.
+  # -----------------------------------------------------------------------
+  cli:
+    name: cli (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            runner: ubuntu-latest
+            ext: ""
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            ext: ""
+          - name: darwin-arm64
+            runner: macos-latest
+            ext: ""
+          - name: darwin-x64
+            runner: macos-26-intel
+            ext: ""
+          - name: windows-x64
+            runner: windows-latest
+            ext: ".exe"
+          - name: windows-arm64
+            runner: windows-11-arm
+            ext: ".exe"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build CLI
+        shell: bash
+        env:
+          VIVI_VERSION: ${{ steps.version.outputs.version }}
+          VIVI_REPO: ${{ github.repository }}
+        run: bun run build:cli
+
+      - name: Rename for target
+        shell: bash
+        run: |
+          mkdir -p release
+          src="dist/bin/vivi${{ matrix.ext }}"
+          dst="release/vivi-${{ matrix.name }}${{ matrix.ext }}"
+          mv "$src" "$dst"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vivi-${{ matrix.name }}
+          path: release/vivi-${{ matrix.name }}*
+          if-no-files-found: error
+          retention-days: 7
+
+  # -----------------------------------------------------------------------
+  # Create the GitHub Release and attach compose.yml, binaries, and SHA sums.
+  # Runs only after images and cli all succeed.
+  # -----------------------------------------------------------------------
+  release:
+    name: publish release
+    needs: [images, cli]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Download binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: vivi-*
+          path: release
+          merge-multiple: true
+
+      - name: Assemble release assets
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -eu
+          # Rewrite the image owner in the compose asset so forks publish a
+          # compose file that pulls from their own GHCR namespace. The
+          # canonical file in-repo uses `telus-oss` to keep `bun dev` happy.
+          sed -E "s#ghcr\.io/[^/]+/vivi-#ghcr.io/${OWNER}/vivi-#g" \
+            docker-compose.full.yml > release/docker-compose.yml
+          cd release
+          ls -la
+          sha256sum vivi-* docker-compose.yml > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create release
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            release/vivi-*
+            release/docker-compose.yml
+            release/SHA256SUMS

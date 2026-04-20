@@ -123,12 +123,8 @@ const isMain =
   (process.argv[1].endsWith("migrate.ts") || process.argv[1].endsWith("migrate.js"));
 
 if (isMain) {
-  const DB_DIR = path.resolve("data");
-  const DB_PATH = path.join(DB_DIR, "vivi.db");
-
-  if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
-
-  const db = new Database(DB_PATH);
+  const { paths } = await import("./paths.js");
+  const db = new Database(paths().dbFile);
   db.run("PRAGMA journal_mode = WAL");
   db.run("PRAGMA foreign_keys = ON");
 

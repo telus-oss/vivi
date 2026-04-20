@@ -5,10 +5,10 @@
  */
 
 import fs from "node:fs";
-import path from "node:path";
 import { execSync, execFileSync } from "node:child_process";
 import db from "./db.js";
 import { runtime } from "./runtime.js";
+import { paths } from "./paths.js";
 
 export interface Secret {
   id: string;
@@ -31,12 +31,10 @@ export interface SecretPublic {
   sandboxBaseUrl: string;
 }
 
-const CONFIG_DIR = path.resolve("config");
-const SECRETS_FILE = path.join(CONFIG_DIR, "secrets.json");
+const SECRETS_FILE = paths().secretsFile;
 
 /** Write config/secrets.json for the reverse proxy container. */
 function syncProxyFile() {
-  if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true });
   const rows = db.prepare("SELECT id, key, base_url, header_name FROM secrets").all() as {
     id: string; key: string; base_url: string; header_name: string;
   }[];

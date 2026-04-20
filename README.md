@@ -59,11 +59,40 @@ Each session gets its own container. Run as many as you want.
 
 ### Prerequisites
 
-- [Bun](https://bun.sh) 1.3.5+
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine + Compose v2) or [Podman](https://podman.io/)
 - `git` and `gh` CLI
 
-### Setup
+### Install
+
+Grab the `vivi` binary for your platform from the [latest release](https://github.com/telus-oss/vivi/releases/latest), `chmod +x`, and drop it in your `$PATH`. Then:
+
+```bash
+vivi start
+```
+
+Open `http://localhost:7700`. Add your API key in the Secrets tab (or use "Login with Claude" for OAuth). Point it at a repo, give it a task, and watch it work.
+
+```bash
+vivi status     # show service status
+vivi logs app   # tail logs
+vivi update     # pull the latest compose + images
+vivi stop       # shut it down
+vivi path       # print resolved config / data dirs
+```
+
+Config and data live in platform-native locations by default:
+
+| OS | Config | Data |
+|----|--------|------|
+| Linux | `$XDG_CONFIG_HOME/vivi` (~/.config/vivi) | `$XDG_DATA_HOME/vivi` (~/.local/share/vivi) |
+| macOS | `~/Library/Application Support/vivi` | `~/Library/Application Support/vivi` |
+| Windows | `%APPDATA%\vivi` | `%LOCALAPPDATA%\vivi` |
+
+Override with `VIVI_CONFIG_DIR`, `VIVI_DATA_DIR`, or `VIVI_HOME` (sets both).
+
+### Development
+
+Contributors running against the source tree don't need the CLI:
 
 ```bash
 bun install
@@ -71,7 +100,7 @@ docker build -t vivi-sandbox -f docker/Dockerfile.sandbox .
 bun dev
 ```
 
-Open `http://localhost:5173`. Add your API key in the Secrets tab (or use "Login with Claude" for OAuth). Point it at a repo, give it a task, and watch it work.
+Open `http://localhost:5173`. Dev mode keeps `config/` and `data/` in the repo checkout so state doesn't leak into your user home.
 
 ## How it works
 
@@ -85,6 +114,7 @@ See [docs/architecture.md](docs/architecture.md) for the full architecture, comp
 | `bun run dev:server` | Server only |
 | `bun run dev:ui` | Vite UI only |
 | `bun run build` | Production frontend build |
+| `bun run build:cli` | Compile the `vivi` CLI binary to `dist/bin/vivi` |
 | `bun run build:docker` | Build all Docker images |
 | `bun start` | Production server |
 | `bun test` | Run tests |

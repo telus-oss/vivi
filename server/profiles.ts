@@ -9,6 +9,7 @@ import path from "node:path";
 import { execSync } from "node:child_process";
 import db from "./db.js";
 import { runtime } from "./runtime.js";
+import { paths } from "./paths.js";
 
 export interface Profile {
   id: string;
@@ -19,7 +20,7 @@ export interface Profile {
   lastUsedAt: string | null;
 }
 
-const PROFILES_DIR = path.resolve("data", "profiles");
+const PROFILES_DIR = paths().profilesDir;
 
 export function getProfileDir(id: string): string {
   return path.join(PROFILES_DIR, id, "claude");

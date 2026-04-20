@@ -6,7 +6,7 @@
  */
 
 import fs from "node:fs";
-import path from "node:path";
+import { paths } from "./paths.js";
 
 export interface GitPolicy {
   enabled: boolean;
@@ -18,8 +18,7 @@ export interface GitPolicy {
   allowReadFromUpstream: boolean;
 }
 
-const CONFIG_DIR = path.resolve("config");
-const POLICY_FILE = path.join(CONFIG_DIR, "git-policy.json");
+const POLICY_FILE = paths().gitPolicyFile;
 
 const DEFAULT_POLICY: GitPolicy = {
   enabled: true,
@@ -47,7 +46,6 @@ function load() {
 }
 
 function sync() {
-  if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true });
   fs.writeFileSync(POLICY_FILE, JSON.stringify(policy, null, 2) + "\n");
 }
 

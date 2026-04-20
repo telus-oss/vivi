@@ -1,29 +1,24 @@
-# Full-stack Vivi — runs the app server, proxy, and dind as a single unit.
+# Full-stack Vivi — the compose file the `vivi` CLI uses to orchestrate the app,
+# proxy, and dind. This file is published verbatim as the `docker-compose.yml`
+# release asset on every tag; the CLI fetches it at runtime.
 #
-# Usage:
-#   docker compose -f docker-compose.full.yml up -d
+# Env vars (set by the CLI):
+#   VIVI_VERSION      image tag to pull (e.g. "v0.3.1" or "latest")
+#   VIVI_CONFIG_DIR   host path to the vivi config directory (volume mount)
+#   VIVI_DATA_DIR     host path to the vivi data directory (volume mount)
+#   APP_PORT          host port for the UI (default: 7700)
+#   HOST              hostname the server announces (default: 0.0.0.0)
+#   PUBLIC_PORT_URL_BASE  optional HTTPS base URL for port-forward links
+#                         (see README for the Cloudflare-tunnel use case)
 #
-# The UI will be available at http://localhost:7700
-# Connect to it from the PWA or any browser.
-#
-# Data (SQLite DB, staging, profiles) is persisted in ./vivi-data/ on the host.
-#
-# Environment variables:
-#   APP_PORT              — host port for the UI (default: 7700)
-#   HOST                  — hostname for external access (default: 0.0.0.0)
-#   PUBLIC_PORT_URL_BASE  — optional base URL for port-forward links. When set,
-#                           emitted port URLs become
-#                           https://p-{containerPort}-{sessionPrefix}.{base-host}
-#                           instead of http://...:{PORT}. Useful behind
-#                           Cloudflare tunnels where Universal SSL only covers
-#                           a single-level wildcard. Example:
-#                             PUBLIC_PORT_URL_BASE=https://friendzi.xyz
+# This file never contains `build:` stanzas — it is the release asset
+# consumed by end users via the vivi CLI. Contributors iterating on the
+# images should run `bun dev` or invoke docker compose directly from the
+# repo checkout.
 
 services:
   app:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.app
+    image: ghcr.io/telus-oss/vivi-app:${VIVI_VERSION:-latest}
     ports:
       - "${APP_PORT:-7700}:7700"
     environment:
@@ -33,15 +28,16 @@ services:
       - CONTAINER_RUNTIME=docker
       # Skip proxy/dind lifecycle — managed by this compose file
       - MANAGED_COMPOSE=1
-      # HOST_DATA_DIR tells the server the host-side path for bind-mounts into
-      # sandbox containers, since /app/data inside the container doesn't exist on the host.
-      - HOST_DATA_DIR=${PWD}/vivi-data
+      # Paths the server uses for config and data (bind-mounted below).
+      - VIVI_CONFIG_DIR=/app/config
+      - VIVI_DATA_DIR=/app/data
+      # HOST_DATA_DIR: when the app launches sandbox containers via the host
+      # Docker daemon, bind-mount paths must resolve on the host, not in this
+      # container. The CLI passes the real host path here.
+      - HOST_DATA_DIR=${VIVI_DATA_DIR}
     volumes:
-      # Host bind-mount so paths are consistent between app container and host Docker
-      - ./vivi-data:/app/data
-      # Config shared between app (writes) and proxy (reads)
-      - ./vivi-data/config:/app/config
-      # The app launches sandbox containers on the HOST Docker daemon
+      - ${VIVI_DATA_DIR}:/app/data
+      - ${VIVI_CONFIG_DIR}:/app/config
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       proxy:
@@ -51,25 +47,18 @@ services:
     restart: unless-stopped
 
   proxy:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.proxy
+    image: ghcr.io/telus-oss/vivi-proxy:${VIVI_VERSION:-latest}
     networks:
       - sandbox
       - default
     environment:
-      # Route sandbox traffic to the app container over the shared `default`
-      # network instead of bouncing out through `host.docker.internal` and
-      # back in via the published host port. The host-gateway hop depends on
-      # docker-bridge ↔ custom-bridge iptables rules, which on some Ubuntu
-      # hosts (boyhouse) black-hole the packet and we see
-      # `connect ETIMEDOUT 172.17.0.1:7700` for every `open-port` /
-      # `gh pr create` interception.
+      # Route sandbox → app traffic over the compose network. Avoids the
+      # host-gateway hop that some Ubuntu iptables setups black-hole.
       - HOST_SERVER=app:7700
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./vivi-data/config:/config:ro
+      - ${VIVI_CONFIG_DIR}:/config:ro
       - proxy-ca:/ca
       - proxy-logs:/logs
     healthcheck:
@@ -77,6 +66,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 3
+    restart: unless-stopped
 
   dind:
     image: docker:dind

@@ -20,12 +20,13 @@ import path from "node:path";
 import { execSync, exec, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { runtime } from "./runtime.js";
+import { paths } from "./paths.js";
 
 const execAsync = promisify(exec);
 
 const DIND_HOST = "127.0.0.1";
 const DIND_PORT = 2375;
-const SOCKET_DIR = path.resolve("data", "sockets");
+const SOCKET_DIR = paths().socketsDir;
 export const SESSION_LABEL = "vivi.session";
 
 // TCP port range for per-session proxies (used when Podman can't mount sockets)
@@ -34,9 +35,6 @@ const TCP_PROXY_PORT_MAX = 18999;
 const allocatedTcpPorts = new Set<number>();
 
 const activeProxies = new Map<string, net.Server>();
-
-// Ensure socket directory exists
-fs.mkdirSync(SOCKET_DIR, { recursive: true });
 
 export interface SessionProxyInfo {
   /** "socket" for Docker (bind-mount), "tcp" for Podman (DOCKER_HOST env var) */
