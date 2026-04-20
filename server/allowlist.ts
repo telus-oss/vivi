@@ -5,8 +5,8 @@
  */
 
 import fs from "node:fs";
-import path from "node:path";
 import db, { getConfig, setConfig } from "./db.js";
+import { paths } from "./paths.js";
 
 export interface NetworkRule {
   id: string;
@@ -19,13 +19,10 @@ export interface AllowlistConfig {
   enabled: boolean;
 }
 
-const CONFIG_DIR = path.resolve("config");
-const ALLOWLIST_FILE = path.join(CONFIG_DIR, "allowlist.json");
+const ALLOWLIST_FILE = paths().allowlistFile;
 
 /** Write config/allowlist.json for the proxy container. */
 function syncAllowlistJson() {
-  if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true });
-
   const enabled = getConfig("allowlist_enabled", "true") === "true";
   const rules = db.prepare("SELECT pattern FROM network_rules").all() as { pattern: string }[];
 

@@ -25,6 +25,7 @@ import {
 import * as profiles from "./profiles.js";
 import { runtime } from "./runtime.js";
 import * as sandboxImages from "./sandbox-images.js";
+import { paths, toHostPath } from "./paths.js";
 
 export interface SessionConfig {
   repoPath?: string;
@@ -58,13 +59,12 @@ export interface SessionState {
   startedAt: string | null;
 }
 
+// In bare/dev mode (`bun dev`), the server shells out to compose to launch
+// proxy+dind. In managed mode (MANAGED_COMPOSE=1), the CLI owns compose and
+// this value is never read. Dev mode assumes the repo root as cwd.
 const COMPOSE_FILE = path.resolve("docker-compose.yml");
 const PROJECT_NAME = "vivi";
-const STAGING_DIR = path.resolve("data", "staging");
-// When running inside a container, bind-mount paths in `docker run -v` must reference
-// the HOST filesystem, not the container filesystem. HOST_DATA_DIR provides the host-side
-// path to the data directory so staging mounts resolve correctly on the host daemon.
-const HOST_DATA_DIR = process.env.HOST_DATA_DIR || "";
+const STAGING_DIR = paths().stagingDir;
 const BUILTIN_IMAGE = "vivi-sandbox";
 const SANDBOX_READY_TIMEOUT = Number(process.env.SANDBOX_READY_TIMEOUT) || 30_000;
 const SANDBOX_NETWORK = "vivi_sandbox";
@@ -249,11 +249,7 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
     }
 
     const containerName = getContainerName(id);
-    const stagingAbsPath = path.resolve(sessionStagingDir);
-    // When running inside a container, remap staging path to the host-side equivalent
-    const stagingMountPath = HOST_DATA_DIR
-      ? stagingAbsPath.replace(path.resolve("data"), HOST_DATA_DIR)
-      : stagingAbsPath;
+    const stagingMountPath = toHostPath(path.resolve(sessionStagingDir));
 
     // Pre-flight: verify the container runtime can read bind-mounted paths.
     // On macOS, ~/Documents, ~/Desktop, ~/Downloads are TCC-protected —
@@ -274,10 +270,7 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
     // Podman: use TCP proxy and set DOCKER_HOST (Podman VMs can't mount host sockets)
     const dockerSocketFlags: string[] = [];
     if (proxyInfo.mode === "socket" && proxyInfo.socketPath) {
-      const socketMountPath = HOST_DATA_DIR
-        ? proxyInfo.socketPath.replace(path.resolve("data"), HOST_DATA_DIR)
-        : proxyInfo.socketPath;
-      dockerSocketFlags.push("-v", `${socketMountPath}:/var/run/docker.sock`);
+      dockerSocketFlags.push("-v", `${toHostPath(proxyInfo.socketPath)}:/var/run/docker.sock`);
     } else if (proxyInfo.mode === "tcp" && proxyInfo.tcpPort) {
       dockerSocketFlags.push("-e", `DOCKER_HOST=tcp://host.containers.internal:${proxyInfo.tcpPort}`);
     }
@@ -290,7 +283,7 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
       "-v", `${PROXY_CA_VOLUME}:/proxy-ca:ro`,
       "-v", `vivi-workspace-${id}:/workspace`,
       ...dockerSocketFlags,
-      ...(profileDir ? ["-v", `${HOST_DATA_DIR ? profileDir.replace(path.resolve("data"), HOST_DATA_DIR) : profileDir}:/claude-profile:ro`] : []),
+      ...(profileDir ? ["-v", `${toHostPath(profileDir)}:/claude-profile:ro`] : []),
       "-e", "HTTP_PROXY=http://proxy:7443",
       "-e", "HTTPS_PROXY=http://proxy:7443",
       "-e", "http_proxy=http://proxy:7443",

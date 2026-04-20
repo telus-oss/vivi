@@ -18,16 +18,10 @@
  */
 
 import { Database } from "bun:sqlite";
-import path from "node:path";
-import fs from "node:fs";
 import { runMigrations } from "./migrate.js";
+import { paths } from "./paths.js";
 
-const DB_DIR = path.resolve("data");
-const DB_PATH = path.join(DB_DIR, "vivi.db");
-
-if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
-
-const db = new Database(DB_PATH);
+const db = new Database(paths().dbFile);
 db.run("PRAGMA journal_mode = WAL");
 db.run("PRAGMA foreign_keys = ON");
 
