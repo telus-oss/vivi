@@ -7,6 +7,7 @@
 import express from "express";
 import cors from "cors";
 import http from "node:http";
+import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -997,18 +998,52 @@ const server = http.createServer((req, res) => {
   app(req, res);
 });
 
-// Single upgrade handler: port-forward subdomains → proxy; everything else → internal WS dispatcher.
+// Single upgrade handler: port-forward subdomains → raw TCP pipe; everything else → internal WS dispatcher.
 // Must be one listener — Node emits 'upgrade' to every registered listener, so a second one
-// would destroy a socket the first already handed off to the proxy.
+// would destroy a socket the first already handed off.
+//
+// We skip http-proxy for WS and just splice the client socket to a fresh TCP connection
+// to the host-port listener. The target's socat bridge already handles the WS handshake
+// end-to-end; http-proxy's .ws() was hanging without emitting an error in this setup.
 server.on("upgrade", (req, socket, head) => {
   const subdomain = extractPortSubdomain(req.headers.host);
   if (subdomain) {
     const pf = getPortForwardBySubdomain(subdomain);
-    if (pf) {
-      portProxy.ws(req, socket, head, { target: `http://127.0.0.1:${pf.hostPort}` });
+    if (!pf) {
+      socket.destroy();
       return;
     }
-    socket.destroy();
+    const upstream = net.connect(pf.hostPort, "127.0.0.1", () => {
+      // Re-emit the original request line + headers so the target app sees a real HTTP/1.1 upgrade.
+      const reqLine = `${req.method} ${req.url} HTTP/${req.httpVersion}\r\n`;
+      const headerLines: string[] = [];
+      for (const [name, value] of Object.entries(req.headers)) {
+        if (value === undefined) continue;
+        if (Array.isArray(value)) {
+          for (const v of value) headerLines.push(`${name}: ${v}`);
+        } else {
+          headerLines.push(`${name}: ${value}`);
+        }
+      }
+      upstream.write(reqLine + headerLines.join("\r\n") + "\r\n\r\n");
+      if (head && head.length > 0) upstream.write(head);
+      socket.pipe(upstream);
+      upstream.pipe(socket);
+    });
+    const cleanup = () => {
+      try { socket.destroy(); } catch { /* already destroyed */ }
+      try { upstream.destroy(); } catch { /* already destroyed */ }
+    };
+    upstream.on("error", (err) => {
+      console.error(`[port-proxy] WS upstream error for ${subdomain}: ${err.message}`);
+      cleanup();
+    });
+    socket.on("error", (err) => {
+      console.warn(`[port-proxy] WS client error for ${subdomain}: ${err.message}`);
+      cleanup();
+    });
+    upstream.on("close", cleanup);
+    socket.on("close", cleanup);
     return;
   }
   handleInternalWsUpgrade(req, socket, head);
