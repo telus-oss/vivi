@@ -15,7 +15,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 import { runtime } from "./runtime.js";
-import { attachWebSocketServer, getMonitor, removeMonitor } from "./pty.js";
+import { handleInternalWsUpgrade, getMonitor, removeMonitor } from "./pty.js";
 import * as secrets from "./secrets.js";
 import * as allowlist from "./allowlist.js";
 import * as sandboxImages from "./sandbox-images.js";
@@ -997,7 +997,9 @@ const server = http.createServer((req, res) => {
   app(req, res);
 });
 
-// Handle WebSocket upgrades for port-forward subdomains
+// Single upgrade handler: port-forward subdomains → proxy; everything else → internal WS dispatcher.
+// Must be one listener — Node emits 'upgrade' to every registered listener, so a second one
+// would destroy a socket the first already handed off to the proxy.
 server.on("upgrade", (req, socket, head) => {
   const subdomain = extractPortSubdomain(req.headers.host);
   if (subdomain) {
@@ -1009,10 +1011,8 @@ server.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
-  // Non-port-forward WebSocket upgrades are handled by attachWebSocketServer below
+  handleInternalWsUpgrade(req, socket, head);
 });
-
-attachWebSocketServer(server);
 
 // Listen immediately so the frontend can connect, then restore sessions in the background.
 server.listen(PORT, BIND_ADDRESS, () => {

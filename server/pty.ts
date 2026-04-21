@@ -10,7 +10,6 @@
  */
 
 import { WebSocketServer, WebSocket } from "ws";
-import type { Server } from "node:http";
 import { getContainerName, getSession } from "./container.js";
 import { ActivityMonitor } from "./monitor.js";
 import { runtime } from "./runtime.js";
@@ -173,28 +172,30 @@ function spawnPty(
   return pty;
 }
 
-export function attachWebSocketServer(server: Server) {
-  const wss = new WebSocketServer({ noServer: true });
+const internalWss = new WebSocketServer({ noServer: true });
 
-  server.on("upgrade", (req, socket, head) => {
-    const url = new URL(req.url || "/", `http://${req.headers.host}`);
+export function handleInternalWsUpgrade(
+  req: import("node:http").IncomingMessage,
+  socket: import("node:stream").Duplex,
+  head: Buffer,
+) {
+  const url = new URL(req.url || "/", `http://${req.headers.host}`);
 
-    if (url.pathname === "/ws/terminal") {
-      wss.handleUpgrade(req, socket, head, (ws) => {
-        handleTerminalConnection(ws, url);
-      });
-    } else if (url.pathname === "/ws/monitor") {
-      wss.handleUpgrade(req, socket, head, (ws) => {
-        handleMonitorConnection(ws, url);
-      });
-    } else if (url.pathname === "/ws/docker") {
-      wss.handleUpgrade(req, socket, head, (ws) => {
-        handleDockerConnection(ws, url);
-      });
-    } else {
-      socket.destroy();
-    }
-  });
+  if (url.pathname === "/ws/terminal") {
+    internalWss.handleUpgrade(req, socket, head, (ws) => {
+      handleTerminalConnection(ws, url);
+    });
+  } else if (url.pathname === "/ws/monitor") {
+    internalWss.handleUpgrade(req, socket, head, (ws) => {
+      handleMonitorConnection(ws, url);
+    });
+  } else if (url.pathname === "/ws/docker") {
+    internalWss.handleUpgrade(req, socket, head, (ws) => {
+      handleDockerConnection(ws, url);
+    });
+  } else {
+    socket.destroy();
+  }
 }
 
 function handleTerminalConnection(ws: WebSocket, url: URL) {
