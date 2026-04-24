@@ -107,8 +107,10 @@ export function getPrFile(id: string, filePath: string): string {
   const prReq = prRequests.find((p) => p.id === id);
   if (!prReq) throw new Error(`PR request ${id} not found`);
 
-  // Normalize and validate: resolve against /workspace, then verify it stays within bounds
-  const resolved = path.resolve("/workspace", filePath);
+  // Normalize and validate: resolve against /workspace, then verify it stays within bounds.
+  // Use POSIX semantics — the sandbox is a Linux container, and on Windows hosts path.resolve
+  // would produce "C:\workspace\..." and bypass the prefix check.
+  const resolved = path.posix.resolve("/workspace", filePath);
   if (!resolved.startsWith("/workspace/")) {
     throw new Error("Invalid file path");
   }

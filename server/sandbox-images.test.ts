@@ -34,6 +34,10 @@ vi.mock("node:child_process", () => {
   return { ...mod, default: mod };
 });
 
+vi.mock("./runtime.js", () => ({
+  runtime: { bin: "docker" },
+}));
+
 // ---------------------------------------------------------------------------
 // Import after mocks are in place.
 // ---------------------------------------------------------------------------
