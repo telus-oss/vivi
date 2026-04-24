@@ -30,7 +30,14 @@ import fs from "node:fs";
 // `schema_migrations` table is assumed to have this baseline applied.
 const BASELINE_MIGRATION = "001_initial_schema.sql";
 
-const DEFAULT_MIGRATIONS_DIR = path.resolve("migrations");
+// Resolve `migrations/` relative to the binary first (for `bun build --compile`
+// output like dist/bin/vivi-app → ../../migrations), then fall back to cwd
+// for `bun run` / `bun dev`.
+const DEFAULT_MIGRATIONS_DIR = (() => {
+  const nextToBinary = path.resolve(path.dirname(process.execPath), "../../migrations");
+  if (fs.existsSync(nextToBinary)) return nextToBinary;
+  return path.resolve("migrations");
+})();
 
 export function runMigrations(
   db: Database,

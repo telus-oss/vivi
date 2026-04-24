@@ -53,8 +53,10 @@ services:
       - default
     environment:
       # Route sandbox → app traffic over the compose network. Avoids the
-      # host-gateway hop that some Ubuntu iptables setups black-hole.
-      - HOST_SERVER=app:7700
+      # host-gateway hop that some Ubuntu iptables setups black-hole. The
+      # `vivi start --host` mode overrides this to host.docker.internal:<port>
+      # so the proxy can reach a server running natively on the host.
+      - HOST_SERVER=${HOST_SERVER:-app:7700}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

@@ -90,6 +90,21 @@ Config and data live in platform-native locations by default:
 
 Override with `VIVI_CONFIG_DIR`, `VIVI_DATA_DIR`, or `VIVI_HOME` (sets both).
 
+### Host mode (native app, containers for proxy + dind)
+
+Some environments block GitHub personal-access-tokens, so contributors sign in with the host's `gh` CLI. When vivi's app runs in a container, that auth isn't reachable. Host mode keeps proxy + dind in containers (for isolation and the dind sandbox) but runs the app on the host, reusing whatever `gh`, `git`, and keychain creds you already have.
+
+```bash
+vivi start --host
+vivi status --host
+vivi logs sandbox    # proxy/dind logs still come from compose
+vivi stop --host
+```
+
+Prerequisites: `docker` (Desktop or equivalent) and a `vivi-app` binary sitting next to the `vivi` CLI in the same directory. The binary ships in the release tarball; if you're running from source, `bun run build:dist` produces `dist/bin/vivi` + `dist/bin/vivi-app` + populated `dist/` frontend.
+
+The app listens on `http://localhost:7700` (same as all-in-containers mode). The PID is tracked at `{data-dir}/vivi-app.pid` and stdout/stderr lands in `{data-dir}/vivi-app.log`.
+
 ### Development
 
 Contributors running against the source tree don't need the CLI:

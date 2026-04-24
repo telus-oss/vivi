@@ -907,7 +907,16 @@ app.post("/api/update/apply", limiter("update"), async (_req, res) => {
 // --- Serve frontend (production builds) ---
 // In production the Vite-built frontend lives in dist/. Serve it as static
 // files with a fallback to index.html for client-side routing.
-const distPath = path.resolve("dist");
+//
+// When running as a compiled binary (dist/bin/vivi-app), process.cwd()
+// isn't the repo root, so `path.resolve("dist")` misses. Try a path relative
+// to the binary first (../../dist from dist/bin/vivi-app → repo root dist/),
+// then fall back to cwd-relative for the `bun dev` / `bun run` flow.
+const distPath = (() => {
+  const nextToBinary = path.resolve(path.dirname(process.execPath), "../../dist");
+  if (fs.existsSync(path.join(nextToBinary, "index.html"))) return nextToBinary;
+  return path.resolve("dist");
+})();
 if (fs.existsSync(path.join(distPath, "index.html"))) {
   // Build ID changes per deploy so /sw.js bytes differ, which is what the
   // browser uses to decide whether to install a new service worker. Without
