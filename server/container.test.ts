@@ -120,8 +120,10 @@ describe("session ID generation", () => {
 });
 
 describe("startSession validation", () => {
-  it("requires repoPath when not attaching", async () => {
-    await expect(startSession({})).rejects.toThrow("repoPath is required");
+  it("requires repoPath or githubRepo when not attaching", async () => {
+    await expect(startSession({})).rejects.toThrow(
+      "repoPath or githubRepo is required",
+    );
   });
 
   it("rejects non-existent paths", async () => {
