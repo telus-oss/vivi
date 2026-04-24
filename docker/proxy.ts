@@ -29,7 +29,7 @@ const GIT_POLICY_FILE = process.env.GIT_POLICY_FILE || "/config/git-policy.json"
 const CA_CERT_FILE = process.env.CA_CERT_FILE || "/ca/ca-cert.pem";
 const CA_KEY_FILE = process.env.CA_KEY_FILE || "/ca/ca-key.pem";
 const PORT = parseInt(process.env.PROXY_PORT || "7443", 10);
-const HOST_SERVER = process.env.HOST_SERVER || "host.docker.internal:7700";
+const HOST_SERVER = process.env.HOST_SERVER || "host.docker.internal:5151";
 const TIMING_LOGS = JSON.parse(process.env.PROXY_TIMING_LOGS || "true");
 
 // --- Types ---

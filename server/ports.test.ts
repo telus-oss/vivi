@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { makeProxyUrl, setServerPort } from "./proxyUrl";
 
-setServerPort(7700);
+setServerPort(5151);
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -19,7 +19,7 @@ describe("makeProxyUrl", () => {
 
   test("defaults to http://{sub}.{HOST}:{PORT} when no env base is set", () => {
     process.env.HOST = "localhost";
-    expect(makeProxyUrl("p-3000-abc12345")).toBe("http://p-3000-abc12345.localhost:7700");
+    expect(makeProxyUrl("p-3000-abc12345")).toBe("http://p-3000-abc12345.localhost:5151");
   });
 
   test("prepends subdomain onto PUBLIC_PORT_URL_BASE hostname", () => {
@@ -36,6 +36,6 @@ describe("makeProxyUrl", () => {
     process.env.PUBLIC_PORT_URL_BASE = "not a url";
     process.env.HOST = "localhost";
     expect(() => makeProxyUrl("p-3000-abc12345")).not.toThrow();
-    expect(makeProxyUrl("p-3000-abc12345")).toBe("http://p-3000-abc12345.localhost:7700");
+    expect(makeProxyUrl("p-3000-abc12345")).toBe("http://p-3000-abc12345.localhost:5151");
   });
 });

@@ -78,20 +78,20 @@ export function getApiBase(): string {
 
 /**
  * Returns the WebSocket base URL.
- * "ws://localhost:7700/ws" for same-origin, "wss://remote/ws" for remote.
+ * "ws://localhost:5151/ws" for same-origin, "wss://remote/ws" for remote.
  *
- * In Vite dev mode the server lives on a different port (7700) than the Vite
+ * In Vite dev mode the server lives on a different port (5151) than the Vite
  * dev server (5173). Vite's HTTP proxy forwards /api requests fine, but its
  * WebSocket proxy is unreliable on some setups, so we hit the backend port
  * directly for WebSockets. The port is injected by Vite at build time via
- * VITE_DEV_WS_PORT (defaults to 7700 — see vite.config.ts).
+ * VITE_DEV_WS_PORT (defaults to 5151 — see vite.config.ts).
  */
 export function getWsBase(): string {
   const active = getActiveBackend();
   if (!active || !active.url) {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const devWsPort = import.meta.env.DEV
-      ? (import.meta.env.VITE_DEV_WS_PORT ?? "7700")
+      ? (import.meta.env.VITE_DEV_WS_PORT ?? "5151")
       : "";
     const host = devWsPort ? `${location.hostname}:${devWsPort}` : location.host;
     return `${proto}//${host}/ws`;

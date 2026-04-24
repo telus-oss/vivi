@@ -4,7 +4,7 @@ import tailwindcss from "@tailwindcss/vite";
 import fs from "node:fs";
 import path from "node:path";
 
-const backendPort = process.env.BACKEND_PORT || "7700";
+const backendPort = process.env.BACKEND_PORT || "5151";
 const backendHost = process.env.BACKEND_HOST || "127.0.0.1";
 const backendUrl = `http://${backendHost}:${backendPort}`;
 

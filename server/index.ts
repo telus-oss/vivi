@@ -45,7 +45,7 @@ process.on("unhandledRejection", (reason) => {
   console.error("[server] Unhandled promise rejection:", reason);
 });
 
-const PORT = parseInt(process.env.PORT || "7700", 10);
+const PORT = parseInt(process.env.PORT || "5151", 10);
 const HOST = process.env.HOST || "localhost";
 
 // Determine bind address: if HOST is a specific IP, bind to it; otherwise bind to all interfaces
@@ -1148,10 +1148,10 @@ const PORT_SUBDOMAIN_RE = /^p-\d+-[a-z0-9]+$/;
 
 /**
  * Extract the port-forward subdomain from a Host header.
- * e.g. "p-3000-abc123.localhost:7700" -> "p-3000-abc123"
- *      "p-3000-abc123.example.com:7700" -> "p-3000-abc123"
- *      "localhost:7700"               -> null
- *      "host.docker.internal:7700"    -> null
+ * e.g. "p-3000-abc123.localhost:5151" -> "p-3000-abc123"
+ *      "p-3000-abc123.example.com:5151" -> "p-3000-abc123"
+ *      "localhost:5151"               -> null
+ *      "host.docker.internal:5151"    -> null
  */
 function extractPortSubdomain(host: string | undefined): string | null {
   if (!host) return null;

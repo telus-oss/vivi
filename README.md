@@ -70,7 +70,7 @@ Grab the `vivi` binary for your platform from the [latest release](https://githu
 vivi start
 ```
 
-Open `http://localhost:7700`. Add your API key in the Secrets tab (or use "Login with Claude" for OAuth). Point it at a repo, give it a task, and watch it work.
+Open `http://localhost:5151`. Add your API key in the Secrets tab (or use "Login with Claude" for OAuth). Point it at a repo, give it a task, and watch it work.
 
 ```bash
 vivi status     # show service status
