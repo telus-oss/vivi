@@ -79,6 +79,9 @@ RUN mkdir -p /home/agent/.claude && \
     echo '{"hasCompletedOnboarding": true, "acceptedTos": true, "preferredModel": "claude-opus-4-6"}' > /home/agent/.claude.json && \
     chown -R agent:agent /home/agent/.claude /home/agent/.claude.json
 
+# Mark container as sandbox so Claude Code suppresses the bypass-permissions warning
+ENV IS_SANDBOX=1
+
 RUN apt-get update && apt-get install -y --no-install-recommends gosu socat && rm -rf /var/lib/apt/lists/*
 
 # Install Docker CLI (connects to per-session dind socket proxy at /var/run/docker.sock)
