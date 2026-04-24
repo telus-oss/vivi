@@ -7,6 +7,7 @@
 import express from "express";
 import cors from "cors";
 import http from "node:http";
+import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -14,6 +15,8 @@ import { execSync, execFileSync, execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+import crypto from "node:crypto";
+import { WebSocketServer } from "ws";
 import { runtime } from "./runtime.js";
 import { attachWebSocketServer, getMonitor, removeMonitor } from "./pty.js";
 import * as secrets from "./secrets.js";
@@ -954,6 +957,192 @@ portProxy.on("error", (err, _req, res) => {
   }
 });
 
+/**
+ * WebSocket upgrade forwarder for port-forward subdomains.
+ *
+ * Bun 1.3.12 forces a two-layer design because of three bugs:
+ *   - http.ClientRequest never fires 'upgrade' → http-proxy.ws() stalls.
+ *   - socket.write on the raw socket from Node http 'upgrade' events is a
+ *     no-op (bytesWritten stays 0). The only reliable 101 writer is
+ *     `ws.WebSocketServer.handleUpgrade`, which Bun intercepts natively.
+ *   - net.connect to a same-process net.Server hangs in 'opening' forever,
+ *     so the normal `ws.WebSocket` client can't reach our host-port TCP
+ *     bridge. `Bun.connect` does not have this bug.
+ *
+ * Workaround: ws.handleUpgrade on the browser side (native intercept), and
+ * a hand-rolled minimal WS client on the upstream side over Bun.connect to
+ * the host-port TCP bridge in server/ports.ts (which docker-execs socat
+ * into the sandbox and pipes bytes to code-server). Frames are decoded
+ * from raw TCP bytes, re-emitted via ws; outgoing messages are re-framed
+ * with a fresh mask and written to the Bun.connect socket.
+ */
+const portForwardWss = new WebSocketServer({ noServer: true });
+
+function encodeWsFrame(payload: Buffer, opcode: number, mask: boolean): Buffer {
+  const header: number[] = [0x80 | (opcode & 0x0f)];
+  let extLen: Buffer | null = null;
+  if (payload.length <= 125) {
+    header.push((mask ? 0x80 : 0) | payload.length);
+  } else if (payload.length <= 0xffff) {
+    header.push((mask ? 0x80 : 0) | 126);
+    extLen = Buffer.alloc(2);
+    extLen.writeUInt16BE(payload.length, 0);
+  } else {
+    header.push((mask ? 0x80 : 0) | 127);
+    extLen = Buffer.alloc(8);
+    extLen.writeUInt32BE(0, 0);
+    extLen.writeUInt32BE(payload.length, 4);
+  }
+  const parts: Buffer[] = [Buffer.from(header)];
+  if (extLen) parts.push(extLen);
+  if (mask) {
+    const key = crypto.randomBytes(4);
+    parts.push(key);
+    const masked = Buffer.allocUnsafe(payload.length);
+    for (let i = 0; i < payload.length; i++) masked[i] = payload[i] ^ key[i % 4];
+    parts.push(masked);
+  } else {
+    parts.push(payload);
+  }
+  return Buffer.concat(parts);
+}
+
+interface ParsedFrame { fin: boolean; opcode: number; payload: Buffer }
+
+function parseWsFrame(buf: Buffer, offset: number): { frame: ParsedFrame; next: number } | null {
+  if (buf.length - offset < 2) return null;
+  const b0 = buf[offset];
+  const b1 = buf[offset + 1];
+  const fin = (b0 & 0x80) !== 0;
+  const opcode = b0 & 0x0f;
+  const masked = (b1 & 0x80) !== 0;
+  let len = b1 & 0x7f;
+  let cur = offset + 2;
+  if (len === 126) {
+    if (buf.length - cur < 2) return null;
+    len = buf.readUInt16BE(cur);
+    cur += 2;
+  } else if (len === 127) {
+    if (buf.length - cur < 8) return null;
+    const hi = buf.readUInt32BE(cur);
+    const lo = buf.readUInt32BE(cur + 4);
+    len = hi * 0x100000000 + lo;
+    cur += 8;
+  }
+  let maskKey: Buffer | null = null;
+  if (masked) {
+    if (buf.length - cur < 4) return null;
+    maskKey = buf.subarray(cur, cur + 4);
+    cur += 4;
+  }
+  if (buf.length - cur < len) return null;
+  let payload = buf.subarray(cur, cur + len);
+  if (maskKey) {
+    const out = Buffer.allocUnsafe(len);
+    for (let i = 0; i < len; i++) out[i] = payload[i] ^ maskKey[i % 4];
+    payload = out;
+  }
+  return { frame: { fin, opcode, payload: Buffer.from(payload) }, next: cur + len };
+}
+
+function forwardWebSocketUpgrade(
+  req: http.IncomingMessage,
+  socket: net.Socket,
+  head: Buffer,
+  pf: { sessionId: string; containerPort: number; hostPort: number; targetHost?: string },
+): void {
+  portForwardWss.handleUpgrade(req, socket, head, (clientWs) => {
+    let handshakeDone = false;
+    let upstreamBuf = Buffer.alloc(0);
+    let upstream: import("bun").Socket | null = null;
+
+    const clientReadyState = () => (clientWs as unknown as { readyState: number }).readyState;
+
+    const closeBoth = () => {
+      try { clientWs.close(); } catch {}
+      try { upstream?.end(); } catch {}
+    };
+
+    Bun.connect({
+      hostname: "127.0.0.1",
+      port: pf.hostPort,
+      socket: {
+        open(sock) {
+          upstream = sock;
+          const path = req.url || "/";
+          const key = crypto.randomBytes(16).toString("base64");
+          const handshake = [
+            `GET ${path} HTTP/1.1`,
+            `Host: 127.0.0.1:${pf.hostPort}`,
+            `Upgrade: websocket`,
+            `Connection: Upgrade`,
+            `Sec-WebSocket-Key: ${key}`,
+            `Sec-WebSocket-Version: 13`,
+            ``, ``,
+          ].join("\r\n");
+          sock.write(handshake);
+        },
+        data(_sock, chunk) {
+          upstreamBuf = Buffer.concat([upstreamBuf, chunk]);
+          if (!handshakeDone) {
+            const end = upstreamBuf.indexOf("\r\n\r\n");
+            if (end === -1) return;
+            const headerBlock = upstreamBuf.subarray(0, end).toString();
+            if (!/^HTTP\/1\.1 101/i.test(headerBlock)) {
+              console.error(`[port-proxy] upstream did not return 101:\n${headerBlock}`);
+              closeBoth();
+              return;
+            }
+            handshakeDone = true;
+            upstreamBuf = upstreamBuf.subarray(end + 4);
+          }
+          while (true) {
+            const r = parseWsFrame(upstreamBuf, 0);
+            if (!r) break;
+            upstreamBuf = upstreamBuf.subarray(r.next);
+            const { opcode, payload } = r.frame;
+            if (opcode === 0x8) { closeBoth(); return; }
+            if (opcode === 0x9) {
+              // Ping → pong back upstream
+              if (upstream) upstream.write(encodeWsFrame(payload, 0xA, true));
+              continue;
+            }
+            if (opcode === 0xA) continue; // pong — ignore
+            if (opcode === 0x1 || opcode === 0x2) {
+              if (clientReadyState() === 1 /* OPEN */) {
+                clientWs.send(payload, { binary: opcode === 0x2 });
+              }
+            }
+            // continuation frames (0x0) aren't handled here; code-server is
+            // expected to send whole messages.
+          }
+        },
+        close() { closeBoth(); },
+        error(_sock, err) {
+          console.error(`[port-proxy] upstream error on :${pf.hostPort}: ${err.message}`);
+          closeBoth();
+        },
+      },
+    }).catch((err) => {
+      console.error(`[port-proxy] Bun.connect failed on :${pf.hostPort}: ${err.message}`);
+      closeBoth();
+    });
+
+    clientWs.on("message", (data, isBinary) => {
+      if (!upstream || !handshakeDone) return;
+      const payload = Buffer.isBuffer(data) ? data : Buffer.from(String(data));
+      upstream.write(encodeWsFrame(payload, isBinary ? 0x2 : 0x1, true));
+    });
+    clientWs.on("close", () => {
+      try { upstream?.end(); } catch {}
+    });
+    clientWs.on("error", (err) => {
+      console.error(`[port-proxy] client ws error: ${err.message}`);
+      closeBoth();
+    });
+  });
+}
+
 /** Pattern for port-forward subdomains: p-{port}-{sessionPrefix} */
 const PORT_SUBDOMAIN_RE = /^p-\d+-[a-z0-9]+$/;
 
@@ -1003,7 +1192,7 @@ server.on("upgrade", (req, socket, head) => {
   if (subdomain) {
     const pf = getPortForwardBySubdomain(subdomain);
     if (pf) {
-      portProxy.ws(req, socket, head, { target: `http://127.0.0.1:${pf.hostPort}` });
+      forwardWebSocketUpgrade(req, socket as net.Socket, head, pf);
       return;
     }
     socket.destroy();

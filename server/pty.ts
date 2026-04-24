@@ -191,9 +191,10 @@ export function attachWebSocketServer(server: Server) {
       wss.handleUpgrade(req, socket, head, (ws) => {
         handleDockerConnection(ws, url);
       });
-    } else {
-      socket.destroy();
     }
+    // Anything else: leave the socket alone. Other upgrade listeners
+    // (e.g. the subdomain port-forward proxy in server/index.ts) may still
+    // be mid-handshake on this socket.
   });
 }
 

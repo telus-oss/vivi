@@ -1,0 +1,34 @@
+FROM oven/bun:1.3.12-debian
+
+# Docker CLI — the app server shells out to `docker` to manage sandbox containers
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates git \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+       > /etc/apt/sources.list.d/docker.list \
+    && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Claude CLI — the `setup-token` login flow shells out to `claude setup-token`
+# on the server side to capture an auth token, so it has to be on PATH here.
+ENV PATH="/root/.local/bin:${PATH}"
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+    && claude --version \
+    || (echo "native installer failed; falling back to bun global install" \
+        && bun install -g @anthropic-ai/claude-code@2.1.81 \
+        && ln -sf /root/.bun/install/global/node_modules/.bin/claude /usr/local/bin/claude \
+        && claude --version)
+
+# Pre-install deps so the image ships with node_modules ready. docker-compose.dev.yml
+# uses an anonymous volume on /app/node_modules so the source bind-mount doesn't
+# hide these — no local `bun install` on the host is required.
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
+
+EXPOSE 7700 5173
+
+CMD ["bun", "run", "dev:docker"]

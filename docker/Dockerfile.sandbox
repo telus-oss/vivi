@@ -84,6 +84,12 @@ ENV IS_SANDBOX=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends gosu socat && rm -rf /var/lib/apt/lists/*
 
+# Install code-server (browser-hosted VS Code) for the in-sandbox editor tab.
+ARG CODE_SERVER_VERSION=4.96.4
+RUN curl -fsSL https://code-server.dev/install.sh \
+      | sh -s -- --version "${CODE_SERVER_VERSION}" \
+    && code-server --version
+
 # Install Docker CLI (connects to per-session dind socket proxy at /var/run/docker.sock)
 RUN install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
@@ -104,6 +110,10 @@ COPY docker/sandbox-CLAUDE.md /opt/vivi/sandbox-CLAUDE.md
 # Move base setup into the drop-in directory
 COPY docker/entrypoint-init/00-base-setup.sh /docker-entrypoint.d/
 RUN chmod +x /docker-entrypoint.d/00-base-setup.sh
+
+# Start code-server on container boot and register its port with the host
+COPY docker/entrypoint-init/10-code-server.sh /docker-entrypoint.d/
+RUN chmod +x /docker-entrypoint.d/10-code-server.sh
 
 # Entrypoint loops over drop-ins
 COPY docker/entrypoint.sh /entrypoint.sh
