@@ -5,7 +5,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 const backendPort = process.env.BACKEND_PORT || "7700";
-const backendUrl = `http://localhost:${backendPort}`;
+const backendHost = process.env.BACKEND_HOST || "127.0.0.1";
+const backendUrl = `http://${backendHost}:${backendPort}`;
 
 // Mirrors the production server's /sw.js handler: substitutes __BUILD_ID__
 // into public/sw.js so dev reloads pick up a fresh SW like prod does, and

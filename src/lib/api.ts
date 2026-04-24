@@ -100,8 +100,7 @@ export const closePort = (sessionId: string, port: number) =>
 
 /** Get the URL for a port forward (uses server-provided proxyUrl). */
 export function getPortForwardUrl(pf: import("./types").PortForward): string {
-  const raw = pf.proxyUrl || `http://localhost:${pf.hostPort}`;
-  // Validate protocol to prevent javascript: or data: URI injection
+  const raw = pf.proxyUrl || `http://127.0.0.1:${pf.hostPort}`;
   try {
     const parsed = new URL(raw);
     if (parsed.protocol === "http:" || parsed.protocol === "https:") {
@@ -110,7 +109,7 @@ export function getPortForwardUrl(pf: import("./types").PortForward): string {
   } catch {
     // Malformed URL — fall through to safe default
   }
-  return `http://localhost:${pf.hostPort}`;
+  return `http://127.0.0.1:${pf.hostPort}`;
 }
 
 // Updates

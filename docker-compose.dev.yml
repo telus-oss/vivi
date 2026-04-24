@@ -1,0 +1,87 @@
+# Vivi dev stack — hot-reloaded app server + Vite, plus proxy and dind.
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up --build
+#
+# Surfaces:
+#   Vite dev UI (primary):   http://localhost:5173
+#   App server direct:       http://localhost:7700
+#   Subdomain port previews: http://<subdomain>.vivi.localhost:7700
+#
+# Source is bind-mounted so edits in ./src and ./server trigger hot reload.
+# The image ships with node_modules pre-installed; an anonymous volume on
+# /app/node_modules preserves them against the bind mount, so no host-side
+# `bun install` is required.
+#
+# HOST=vivi.localhost is a deliberate choice: names under `.localhost`
+# resolve to loopback per RFC 6761, and the server's getBindAddress treats
+# any non-"localhost"/non-IP value as a signal to bind 0.0.0.0, which is
+# what Docker port mapping needs. See server/index.ts:getBindAddress and
+# server/ports.ts:getPortBindAddress.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.app.dev
+    ports:
+      - "${APP_PORT:-7700}:7700"
+      - "${VITE_PORT:-5173}:5173"
+    environment:
+      - PORT=7700
+      - HOST=vivi.localhost
+      - BACKEND_PORT=7700
+      - CONTAINER_RUNTIME=docker
+      - MANAGED_COMPOSE=1
+      - HOST_DATA_DIR=${PWD}/vivi-data
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - ./vivi-data:/app/data
+      - ./vivi-data/config:/app/config
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      proxy:
+        condition: service_healthy
+      dind:
+        condition: service_started
+    restart: unless-stopped
+
+  proxy:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.proxy
+    networks:
+      - sandbox
+      - default
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./vivi-data/config:/config:ro
+      - proxy-ca:/ca
+      - proxy-logs:/logs
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7443/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  dind:
+    image: docker:dind
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    ports:
+      - "127.0.0.1:2375:2375"
+    volumes:
+      - dind-storage:/var/lib/docker
+    restart: unless-stopped
+
+networks:
+  sandbox:
+    internal: true
+
+volumes:
+  proxy-ca:
+  proxy-logs:
+  dind-storage:
