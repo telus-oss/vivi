@@ -11,6 +11,8 @@
     "dev:docker": "concurrently \"bun run --watch server/index.ts\" \"vite --host 0.0.0.0\"",
     "build": "vite build",
     "build:cli": "bun build --compile --minify --define VIVI_VERSION=\"\\\"${VIVI_VERSION:-dev}\\\"\" --define VIVI_REPO=\"\\\"${VIVI_REPO:-telus-oss/vivi}\\\"\" --outfile dist/bin/vivi cli/vivi.ts",
+    "build:server": "bun build --compile --minify --outfile dist/bin/vivi-app server/index.ts",
+    "build:dist": "bun run build && bun run build:server && bun run build:cli",
     "build:docker": "docker compose build",
     "docker:dev": "docker compose -f docker-compose.dev.yml up --build",
     "docker:dev:down": "docker compose -f docker-compose.dev.yml down",
