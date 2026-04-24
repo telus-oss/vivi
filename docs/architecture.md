@@ -3,7 +3,7 @@
 ## Overview
 
 ```
-You (browser) ──── REST + WebSocket ────► Vivi server (Express, port 7700)
+You (browser) ──── REST + WebSocket ────► Vivi server (Express, port 5151)
                                               │
                                               │ docker run / exec
                                               ▼

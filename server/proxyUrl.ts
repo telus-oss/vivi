@@ -7,7 +7,7 @@
  */
 
 /** Server port for constructing fallback proxy URLs. Set via setServerPort(). */
-let serverPort = parseInt(process.env.PORT || "7700", 10);
+let serverPort = parseInt(process.env.PORT || "5151", 10);
 
 export function setServerPort(port: number): void {
   serverPort = port;

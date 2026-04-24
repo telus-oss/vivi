@@ -29,6 +29,6 @@ RUN curl -fsSL https://claude.ai/install.sh | bash \
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
-EXPOSE 7700 5173
+EXPOSE 5151 5173
 
 CMD ["bun", "run", "dev:docker"]

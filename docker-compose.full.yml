@@ -6,7 +6,7 @@
 #   VIVI_VERSION      image tag to pull (e.g. "v0.3.1" or "latest")
 #   VIVI_CONFIG_DIR   host path to the vivi config directory (volume mount)
 #   VIVI_DATA_DIR     host path to the vivi data directory (volume mount)
-#   APP_PORT          host port for the UI (default: 7700)
+#   APP_PORT          host port for the UI (default: 5151)
 #   HOST              hostname the server announces (default: 0.0.0.0)
 #   PUBLIC_PORT_URL_BASE  optional HTTPS base URL for port-forward links
 #                         (see README for the Cloudflare-tunnel use case)
@@ -20,9 +20,9 @@ services:
   app:
     image: ghcr.io/telus-oss/vivi-app:${VIVI_VERSION:-latest}
     ports:
-      - "${APP_PORT:-7700}:7700"
+      - "${APP_PORT:-5151}:5151"
     environment:
-      - PORT=7700
+      - PORT=5151
       - HOST=${HOST:-0.0.0.0}
       - PUBLIC_PORT_URL_BASE=${PUBLIC_PORT_URL_BASE:-}
       - CONTAINER_RUNTIME=docker
@@ -54,7 +54,7 @@ services:
     environment:
       # Route sandbox → app traffic over the compose network. Avoids the
       # host-gateway hop that some Ubuntu iptables setups black-hole.
-      - HOST_SERVER=app:7700
+      - HOST_SERVER=app:5151
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

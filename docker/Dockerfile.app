@@ -47,9 +47,9 @@ RUN mkdir -p /app/config
 # Data directory for SQLite, staging files, sockets
 RUN mkdir -p /app/data
 
-EXPOSE 7700
+EXPOSE 5151
 
-ENV PORT=7700
+ENV PORT=5151
 ENV HOST=0.0.0.0
 
 CMD ["bun", "run", "server/index.ts"]

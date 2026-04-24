@@ -5,8 +5,8 @@
 #
 # Surfaces:
 #   Vite dev UI (primary):   http://localhost:5173
-#   App server direct:       http://localhost:7700
-#   Subdomain port previews: http://<subdomain>.vivi.localhost:7700
+#   App server direct:       http://localhost:5151
+#   Subdomain port previews: http://<subdomain>.vivi.localhost:5151
 #
 # Source is bind-mounted so edits in ./src and ./server trigger hot reload.
 # The image ships with node_modules pre-installed; an anonymous volume on
@@ -25,12 +25,12 @@ services:
       context: .
       dockerfile: docker/Dockerfile.app.dev
     ports:
-      - "${APP_PORT:-7700}:7700"
+      - "${APP_PORT:-5151}:5151"
       - "${VITE_PORT:-5173}:5173"
     environment:
-      - PORT=7700
+      - PORT=5151
       - HOST=vivi.localhost
-      - BACKEND_PORT=7700
+      - BACKEND_PORT=5151
       - CONTAINER_RUNTIME=docker
       - MANAGED_COMPOSE=1
       - HOST_DATA_DIR=${PWD}/vivi-data
