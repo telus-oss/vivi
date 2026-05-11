@@ -50,10 +50,45 @@ spec:
             - name: VIVI_K8S_NAMESPACE
               value: {{ .Release.Namespace | quote }}
             # In-cluster mode: use the Pod's ServiceAccount token directly,
-            # don't spawn `kubectl proxy`. (k8s.ts will be updated to honor
-            # this env var.)
+            # don't spawn `kubectl proxy`.
             - name: VIVI_K8S_IN_CLUSTER
               value: "1"
+            # Bun's fetch ignores the https.Agent that @kubernetes/client-node
+            # configures with the in-cluster CA, so without this it rejects
+            # the API server's cert as self-signed. Pointing NODE_EXTRA_CA_CERTS
+            # at the projected ServiceAccount CA file lets Bun's fetch
+            # validate the cluster API correctly.
+            - name: NODE_EXTRA_CA_CERTS
+              value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+            # Sandbox + proxy image refs used by server/k8s.ts when creating
+            # pods. Should match the images the cluster can actually pull —
+            # if you import images via `k3d image import`, set these to the
+            # imported tags (e.g. vivi-sandbox:k8s, vivi-proxy:k8s).
+            - name: VIVI_SANDBOX_IMAGE
+              value: {{ printf "%s:%s" .Values.viviServer.sandboxImage.repository (.Values.viviServer.sandboxImage.tag | default .Chart.AppVersion) | quote }}
+            - name: VIVI_PROXY_IMAGE
+              value: {{ include "vivi.proxy.image" . | quote }}
+            {{- if .Values.minio.enabled }}
+            # Wire the in-namespace MinIO Deployment as the S3-compatible
+            # backing store for profile snapshots. server/profile-storage.ts
+            # reads these envs to decide whether to mirror saves to S3.
+            - name: VIVI_S3_ENDPOINT
+              value: "vivi-minio:9000"
+            - name: VIVI_S3_BUCKET
+              value: {{ .Values.minio.bucket | quote }}
+            - name: VIVI_S3_USE_SSL
+              value: "0"
+            - name: VIVI_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: vivi-minio
+                  key: rootUser
+            - name: VIVI_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: vivi-minio
+                  key: rootPassword
+            {{- end }}
             - name: HOST
               value: "0.0.0.0"
             - name: PORT

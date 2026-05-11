@@ -117,6 +117,12 @@ viviServer:
     repository: ghcr.io/telus-oss/vivi-app
     tag: "" # defaults to chart's appVersion if empty
     pullPolicy: IfNotPresent
+  # Image used for each sandbox pod (not the Vivi server itself). Must be a
+  # tag the cluster can actually pull — if you import locally-built images
+  # via `k3d image import`, set this to the imported tag (e.g. vivi-sandbox:k8s).
+  sandboxImage:
+    repository: ghcr.io/telus-oss/vivi-sandbox
+    tag: "" # defaults to chart's appVersion if empty
   replicas: 1
   resources:
     requests:
