@@ -283,9 +283,41 @@ function isGitFetchRequest(urlPath: string): boolean {
   return urlPath.includes("/git-upload-pack");
 }
 
+function isGitFetchInfoRefs(urlPath: string): boolean {
+  return urlPath.includes("/info/refs") && urlPath.includes("service=git-upload-pack");
+}
+
+// Smart-HTTP endpoints that legitimately need credential injection. Push
+// requests are intercepted upstream when policy disallows; if push policy
+// allows them through, they still get auth so the legitimate path works.
+function isGitSmartHttpEndpoint(urlPath: string): boolean {
+  return (
+    isGitFetchRequest(urlPath) ||
+    isGitFetchInfoRefs(urlPath) ||
+    isGitPushRequest(urlPath) ||
+    isGitPushInfoRefs(urlPath)
+  );
+}
+
 function isPrCreationRequest(method: string, urlPath: string): boolean {
   // GitHub API: POST /repos/:owner/:repo/pulls
   return method === "POST" && /^\/repos\/[^/]+\/[^/]+\/pulls\/?$/.test(urlPath);
+}
+
+// Decide whether the proxy should inject the user's GitHub PAT into a
+// request to api.github.com. Default-deny: only reads and a small write
+// allowlist (issue/PR comments) get the token. This contains the blast
+// radius of an agent inside the sandbox — it can read anything the user
+// can read and comment on the issue it's working on, but `gh repo delete`,
+// release management, secret/key writes, and similar destructive calls
+// will reach GitHub unauthenticated and 401.
+function isSafeGitHubApiRequest(method: string, urlPath: string): boolean {
+  const m = method.toUpperCase();
+  if (m === "GET" || m === "HEAD") return true;
+  // POST /repos/:o/:r/issues/:n/comments — issue and PR comments share this
+  // endpoint on GitHub (PRs are issues for comment purposes).
+  if (m === "POST" && /^\/repos\/[^/]+\/[^/]+\/issues\/\d+\/comments\/?$/.test(urlPath)) return true;
+  return false;
 }
 
 // --- Git pkt-line helpers ---
@@ -673,20 +705,34 @@ server.on("connect", (req: http.IncomingMessage, clientSocket: net.Socket, head:
         }
       }
 
-      // Inject credentials for git hosts (always replace — sandbox uses dummy placeholders)
+      // Inject credentials for git hosts (always replace — sandbox uses dummy
+      // placeholders). Scope tightly: read APIs + comments + smart-HTTP fetch,
+      // nothing else. See isSafeGitHubApiRequest / isGitSmartHttpEndpoint.
+      const method = (mitmReq.method || "GET").toUpperCase();
       if (isGitApiHost(hostname)) {
         // GitHub API uses Bearer tokens
-        const token = await getGhToken();
-        if (token) {
-          headers.authorization = `token ${token}`;
-          log("GIT-AUTH", `Injected gh token for ${hostname}`);
+        if (isSafeGitHubApiRequest(method, urlPath)) {
+          const token = await getGhToken();
+          if (token) {
+            headers.authorization = `token ${token}`;
+            log("GIT-AUTH", `Injected gh token for ${method} ${hostname}${urlPath}`);
+          }
+        } else {
+          // Strip any placeholder/leaked credential so GitHub 401s the
+          // destructive call instead of honoring an injected token.
+          delete headers.authorization;
+          log("GIT-AUTH-DENY", `Refused token injection for ${method} ${hostname}${urlPath}`);
         }
       } else if (!headers.authorization) {
-        // Git HTTP uses Basic auth — only inject if missing
-        const creds = await getHostCredentials(hostname);
-        if (creds) {
-          headers.authorization = "Basic " + Buffer.from(`${creds.username}:${creds.password}`).toString("base64");
-          log("GIT-AUTH", `Injected git credentials for ${hostname}`);
+        // Git HTTP uses Basic auth — only inject for smart-HTTP endpoints
+        // (fetch + push handshakes). Other paths to the git data plane
+        // don't need credentials and shouldn't get them.
+        if (isGitSmartHttpEndpoint(urlPath)) {
+          const creds = await getHostCredentials(hostname);
+          if (creds) {
+            headers.authorization = "Basic " + Buffer.from(`${creds.username}:${creds.password}`).toString("base64");
+            log("GIT-AUTH", `Injected git credentials for ${method} ${hostname}${urlPath}`);
+          }
         }
       }
     }
