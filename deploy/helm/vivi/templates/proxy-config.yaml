@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: proxy-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vivi.labels" . | nindent 4 }}
+  annotations:
+    # When the host-side Vivi server runs in k8s mode it owns this ConfigMap
+    # (server/k8s.ts → syncProxyConfig). The helm.sh/resource-policy keep
+    # annotation prevents `helm upgrade` from clobbering live edits in that
+    # case. Re-templating still overwrites if values change, which is what
+    # chart-only deployments want.
+    helm.sh/resource-policy: keep
+data:
+  allowlist.json: |
+    {{- toJson .Values.proxy.config.allowlist | nindent 4 }}
+  git-policy.json: |
+    {{- toJson .Values.proxy.config.gitPolicy | nindent 4 }}
+  secrets.json: |
+    {{- toJson .Values.proxy.config.secrets | nindent 4 }}

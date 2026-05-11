@@ -260,6 +260,15 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
         console.warn(`[container:${id}] proxy CA sync failed: ${err.message} — HTTPS interception will fall back to insecure mode`);
       }
 
+      // Resolve the profile dir before pod creation so we know whether to
+      // push it later. Pull from S3 if local copy is missing.
+      let k8sProfileDir: string | null = null;
+      if (config.profileId) {
+        await profiles.ensureLocalProfile(config.profileId);
+        k8sProfileDir = profiles.getProfileDir(config.profileId);
+        profiles.markProfileUsed(config.profileId);
+      }
+
       // No init container / bundle upload — the entrypoint clones from
       // GIT_REMOTE_URL directly (through the MITM proxy, which injects PAT
       // auth from the host-side secret store).
@@ -274,6 +283,18 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
       });
 
       await k8sBackend.waitForSandboxReady(podName, SANDBOX_READY_TIMEOUT);
+
+      // Stream the profile in after the pod is ready. Done post-ready
+      // because the entrypoint has finished bootstrapping /home/agent/.claude
+      // by then and won't race with our writes; Claude Code reads its files
+      // on demand so post-write isn't a problem for the user flow.
+      if (k8sProfileDir) {
+        try {
+          await k8sBackend.pushProfileToPod(podName, k8sProfileDir);
+        } catch (err: any) {
+          console.warn(`[container:${id}] profile push failed: ${err.message} — sandbox will start without saved profile`);
+        }
+      }
 
       session.containerId = podName;
       session.status = "running";
@@ -466,7 +487,7 @@ export async function stopSession(sessionId: string): Promise<void> {
       const profile = profiles.getProfile(profileId);
       if (profile?.autoSave) {
         try {
-          profiles.saveProfileFromContainer(profileId, containerName);
+          await profiles.saveProfileFromContainer(profileId, containerName);
           console.log(`[container:${sessionId}] Saved ~/.claude to profile ${profileId}`);
         } catch (err: any) {
           console.warn(`[container:${sessionId}] Profile save failed: ${err.message}`);

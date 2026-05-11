@@ -24,6 +24,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
 
+# kubectl — required when VIVI_BACKEND=k8s. The k8s backend uses kubectl
+# subprocess for exec/logs/port-forward because Bun's WebSocket exec is
+# unreliable. Negligible footprint (~50MB) so we always install.
+RUN curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/$(dpkg --print-architecture)/kubectl" -o /usr/local/bin/kubectl \
+    && chmod +x /usr/local/bin/kubectl
+
 # Install Claude Code CLI — required by the login / setup-token PTY flow.
 # The official installer drops the binary at ~/.local/bin/claude; symlink into
 # a globally-resolvable location so Bun.which("claude") inside the server finds it.

@@ -913,14 +913,14 @@ app.delete("/api/profiles/:id", limiter("profiles"), (req, res) => {
   }
 });
 
-app.post("/api/profiles/:profileId/save-from-session/:sessionId", limiter("profiles"), (req, res) => {
+app.post("/api/profiles/:profileId/save-from-session/:sessionId", limiter("profiles"), async (req, res) => {
   try {
     const session = container.getSession(req.params.sessionId);
     if (!session || session.status !== "running") {
       return res.status(400).json({ error: "Session not running" });
     }
     const containerName = container.getContainerName(req.params.sessionId);
-    profiles.saveProfileFromContainer(req.params.profileId, containerName);
+    await profiles.saveProfileFromContainer(req.params.profileId, containerName);
     res.json({ ok: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

@@ -37,6 +37,15 @@ spec:
             periodSeconds: 5
           resources:
             {{- toYaml .Values.proxy.resources | nindent 12 }}
+          volumeMounts:
+            - name: proxy-config
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: proxy-config
+          configMap:
+            name: proxy-config
+            optional: true
 ---
 apiVersion: v1
 kind: Service

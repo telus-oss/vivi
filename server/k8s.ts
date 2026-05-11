@@ -14,6 +14,7 @@ import * as k8s from "@kubernetes/client-node";
 import fs from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import stream, { PassThrough, Readable } from "node:stream";
+import { paths } from "./paths.js";
 
 export const NAMESPACE = process.env.VIVI_K8S_NAMESPACE || "vivi";
 const SANDBOX_IMAGE = process.env.VIVI_SANDBOX_IMAGE || "vivi-sandbox:latest";
@@ -91,8 +92,21 @@ function startKubectlProxy(port: number): Promise<void> {
   });
 }
 
+/**
+ * True when Vivi is running inside the cluster (chart-managed Deployment).
+ * In that mode there's a ServiceAccount-projected token mounted at the
+ * conventional in-cluster path; Bun's fetch handles bearer-auth just fine
+ * (unlike client-cert auth, which is what blocks the kubeconfig path), so
+ * we can skip the `kubectl proxy` sidecar entirely.
+ */
+export const IN_CLUSTER = process.env.VIVI_K8S_IN_CLUSTER === "1";
+
 function buildKubeConfig(): k8s.KubeConfig {
   const kc = new k8s.KubeConfig();
+  if (IN_CLUSTER) {
+    kc.loadFromCluster();
+    return kc;
+  }
   if (process.env.VIVI_K8S_DIRECT === "1") {
     kc.loadFromDefault();
     return kc;
@@ -122,6 +136,7 @@ async function probeKubectlProxy(port: number): Promise<boolean> {
 /** Ensure kubectl proxy is running before any API call. Idempotent. */
 let proxyReadyPromise: Promise<void> | null = null;
 async function ensureKubectlProxy(): Promise<void> {
+  if (IN_CLUSTER) return;
   if (process.env.VIVI_K8S_DIRECT === "1") return;
   if (proxyReadyPromise) return proxyReadyPromise;
   proxyReadyPromise = (async () => {
@@ -150,7 +165,10 @@ async function clients() {
     _apps = _kc.makeApiClient(k8s.AppsV1Api);
     _networking = _kc.makeApiClient(k8s.NetworkingV1Api);
     _exec = new k8s.Exec(_kc);
-    console.log(`[k8s] Connected to cluster, namespace: ${NAMESPACE}${process.env.VIVI_K8S_DIRECT === "1" ? "" : ` (via kubectl proxy on 127.0.0.1:${kubectlProxyPort})`}`);
+    const mode = IN_CLUSTER ? "in-cluster (ServiceAccount)"
+      : process.env.VIVI_K8S_DIRECT === "1" ? "direct (kubeconfig)"
+      : `via kubectl proxy on 127.0.0.1:${kubectlProxyPort}`;
+    console.log(`[k8s] Connected to cluster, namespace: ${NAMESPACE} (${mode})`);
   }
   return { kc: _kc!, core: _core!, apps: _apps!, networking: _networking!, exec: _exec! };
 }
@@ -167,6 +185,10 @@ console.log(`[k8s] Module loaded, namespace: ${NAMESPACE}`);
  */
 export async function ensureInfra(): Promise<void> {
   await ensureNamespace();
+  // Populate proxy-config *before* creating the proxy Deployment so the very
+  // first pod boots with the configured allowlist instead of deny-all.
+  await syncProxyConfig();
+  watchProxyConfig();
   await ensureProxyDeployment();
   await ensureProxyService();
   // NetworkPolicy intentionally not applied by default — minikube's default CNI
@@ -225,13 +247,93 @@ async function ensureProxyDeployment(): Promise<void> {
                 httpGet: { path: "/health", port: 7443 },
                 periodSeconds: 5,
               },
+              // Mount the host-side allowlist / secrets / git-policy as /config.
+              // The ConfigMap is upserted by syncProxyConfig() before this
+              // Deployment is created, so the proxy starts with the user's
+              // configured allowlist instead of falling back to deny-all.
+              volumeMounts: [{ name: "proxy-config", mountPath: "/config", readOnly: true }],
             }],
+            volumes: [{ name: "proxy-config", configMap: { name: "proxy-config", optional: true } }],
           },
         },
       },
     },
   });
   console.log(`[k8s] Created proxy Deployment (HOST_SERVER=${hostServer})`);
+}
+
+/**
+ * Mirror the host-side allowlist / secrets / git-policy JSON files into a
+ * ConfigMap so the in-cluster proxy can read the same effective config.
+ *
+ * In docker mode, these files are bind-mounted directly into the proxy
+ * container; that's not available in k8s, so we push them as a ConfigMap
+ * and let the kubelet propagate updates to the mount (~60s eventual).
+ *
+ * The proxy already fs.watchFile's its config paths, so updates take effect
+ * without needing to restart the Deployment.
+ */
+export async function syncProxyConfig(): Promise<void> {
+  const { core } = await clients();
+  const p = paths();
+  const data: Record<string, string> = {};
+
+  // Each is optional — if the host hasn't written a file yet, skip rather
+  // than putting bogus contents into the ConfigMap.
+  for (const [key, file] of [
+    ["allowlist.json", p.allowlistFile],
+    ["secrets.json", p.secretsFile],
+    ["git-policy.json", p.gitPolicyFile],
+  ] as const) {
+    try {
+      data[key] = fs.readFileSync(file, "utf-8");
+    } catch (err: any) {
+      if (err?.code !== "ENOENT") {
+        console.warn(`[k8s] syncProxyConfig: failed to read ${file}: ${err.message}`);
+      }
+    }
+  }
+
+  if (Object.keys(data).length === 0) {
+    console.log("[k8s] syncProxyConfig: no host config files yet, skipping");
+    return;
+  }
+
+  const body = { metadata: { name: "proxy-config" }, data };
+  try {
+    await core.readNamespacedConfigMap({ name: "proxy-config", namespace: NAMESPACE });
+    await core.replaceNamespacedConfigMap({ name: "proxy-config", namespace: NAMESPACE, body });
+  } catch (err: any) {
+    if (err?.code === 404 || err?.response?.statusCode === 404) {
+      await core.createNamespacedConfigMap({ namespace: NAMESPACE, body });
+    } else {
+      throw err;
+    }
+  }
+  console.log(`[k8s] Synced proxy config (${Object.keys(data).join(", ")}) → ConfigMap proxy-config`);
+}
+
+let _configWatchersInstalled = false;
+function watchProxyConfig() {
+  if (_configWatchersInstalled) return;
+  _configWatchersInstalled = true;
+  const p = paths();
+  let debounce: NodeJS.Timeout | null = null;
+  const trigger = () => {
+    if (debounce) clearTimeout(debounce);
+    debounce = setTimeout(() => {
+      syncProxyConfig().catch((err) => {
+        console.warn(`[k8s] syncProxyConfig (watcher) failed: ${err.message}`);
+      });
+    }, 500);
+  };
+  for (const file of [p.allowlistFile, p.secretsFile, p.gitPolicyFile]) {
+    try {
+      fs.watchFile(file, { interval: 1000 }, trigger);
+    } catch (err: any) {
+      console.warn(`[k8s] watchProxyConfig: failed to watch ${file}: ${err.message}`);
+    }
+  }
 }
 
 async function ensureProxyService(): Promise<void> {
@@ -579,6 +681,59 @@ export async function uploadBundle(podName: string, hostBundlePath: string): Pro
     throw new Error(`bundle upload failed: exit ${res.exitCode} stderr=${res.stderr.toString()}`);
   }
   console.log(`[k8s] Uploaded bundle to ${podName} (${data.length} bytes)`);
+}
+
+/**
+ * Push a Claude profile directory (the contents of {profilesDir}/{id}/claude/)
+ * into a running sandbox pod at /home/agent/.claude. Used in k8s mode where
+ * docker bind-mounts don't apply.
+ *
+ * Stream-based: tar the host dir, pipe into `kubectl exec tar -x` inside the
+ * pod, then chown to the agent UID. Safe to call after waitForSandboxReady —
+ * Claude Code reads ~/.claude/* fresh on each invocation, so updating files
+ * after the entrypoint script has finished is fine.
+ */
+export async function pushProfileToPod(podName: string, hostProfileDir: string): Promise<void> {
+  if (!fs.existsSync(hostProfileDir)) {
+    console.warn(`[k8s] pushProfileToPod: ${hostProfileDir} does not exist, skipping`);
+    return;
+  }
+  const entries = fs.readdirSync(hostProfileDir);
+  if (entries.length === 0) {
+    console.log(`[k8s] pushProfileToPod: ${hostProfileDir} is empty, skipping`);
+    return;
+  }
+
+  // tar the directory contents (not the directory itself) so they land
+  // directly at /home/agent/.claude/<file> rather than nested.
+  const tarProc = spawn("tar", ["cf", "-", "-C", hostProfileDir, "."], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const tarChunks: Buffer[] = [];
+  await new Promise<void>((resolve, reject) => {
+    tarProc.stdout!.on("data", (c: Buffer) => tarChunks.push(c));
+    tarProc.stderr!.on("data", (c: Buffer) => {
+      const s = c.toString().trim();
+      if (s) console.warn(`[k8s] tar stderr: ${s}`);
+    });
+    tarProc.on("error", reject);
+    tarProc.on("exit", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`tar exited with code ${code}`));
+    });
+  });
+  const tarBuf = Buffer.concat(tarChunks);
+
+  // Pipe the tar into the sandbox container. mkdir is idempotent and the
+  // entrypoint usually created /home/agent/.claude already.
+  const res = await kubectlSubprocess([
+    "exec", "-i", "-n", NAMESPACE, podName, "-c", SANDBOX_CONTAINER_NAME, "--",
+    "sh", "-c", "mkdir -p /home/agent/.claude && tar xf - -C /home/agent/.claude && chown -R agent:agent /home/agent/.claude",
+  ], { stdin: tarBuf, timeoutMs: 60_000 });
+  if (res.exitCode !== 0) {
+    throw new Error(`profile push failed: exit ${res.exitCode} stderr=${res.stderr.toString()}`);
+  }
+  console.log(`[k8s] Pushed profile (${tarBuf.length} bytes, ${entries.length} top-level entries) → ${podName}:/home/agent/.claude`);
 }
 
 /**

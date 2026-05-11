@@ -72,6 +72,40 @@ proxy:
   # (e.g. "host.minikube.internal:7700") for host-side Vivi server mode.
   hostServer: "vivi-server:7700"
 
+  # Default proxy /config files. These match the seeds the host-side Vivi
+  # server writes (see migrations/001_initial_schema.sql + server/proxy.ts
+  # defaults). Override per-tenant if you need a stricter allowlist or a
+  # different git policy.
+  #
+  # When the host-side Vivi server runs in k8s mode, it overwrites this
+  # ConfigMap (server/k8s.ts → syncProxyConfig); the values here only matter
+  # for chart-only / in-cluster Vivi installs.
+  config:
+    allowlist:
+      enabled: true
+      hosts:
+        - registry.npmjs.org
+        - "*.github.com"
+        - "*.githubusercontent.com"
+        - api.anthropic.com
+        - downloads.anthropic.com
+        - platform.claude.com
+    gitPolicy:
+      enabled: true
+      gitHosts:
+        - github.com
+        - api.github.com
+      allowFetch: true
+      allowPush: false
+      allowPrCreation: true
+      protectedBranches:
+        - main
+        - master
+      allowReadFromUpstream: true
+    # Map of name → { key, baseUrl }. Empty by default — the host server
+    # injects real API keys when the user adds them in the UI.
+    secrets: {}
+
 # ──────────────────────────────────────────────────────────────────────────
 # Vivi server — Deployment + Service + optional Ingress.
 # Set enabled: false if the user runs Vivi on their own machine and only

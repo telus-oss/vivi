@@ -12,7 +12,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { execSync } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import db from "./db.js";
 import { runtime } from "./runtime.js";
 import { paths } from "./paths.js";
@@ -95,20 +95,82 @@ export function markProfileUsed(id: string): void {
   db.prepare("UPDATE profiles SET last_used_at = datetime('now') WHERE id = ?").run(id);
 }
 
-export function saveProfileFromContainer(profileId: string, containerName: string): void {
+export async function saveProfileFromContainer(profileId: string, containerName: string): Promise<void> {
   const dir = getProfileDir(profileId);
   fs.mkdirSync(dir, { recursive: true });
-  // Use `docker exec tar` instead of `docker cp` because `docker cp` fails when
-  // the container has a Unix socket bind-mounted (/var/run/docker.sock) — Docker
-  // walks the overlay merged layer and errors with "not a directory".
-  execSync(`${runtime.bin} exec ${containerName} tar cf - -C /home/agent/.claude . | tar xf - -C ${JSON.stringify(dir)}`, {
-    stdio: "pipe",
-    timeout: 30_000,
-  });
+
+  if (runtime.backend === "k8s") {
+    // k8s path: stream `tar` out of the pod via `kubectl exec`, then pipe
+    // into a local `tar xf -`. Avoids a shell pipe so this works on Windows.
+    await k8sTarExtract(containerName, dir);
+  } else {
+    // Use `docker exec tar` instead of `docker cp` because `docker cp` fails when
+    // the container has a Unix socket bind-mounted (/var/run/docker.sock) — Docker
+    // walks the overlay merged layer and errors with "not a directory".
+    execSync(`${runtime.bin} exec ${containerName} tar cf - -C /home/agent/.claude . | tar xf - -C ${JSON.stringify(dir)}`, {
+      stdio: "pipe",
+      timeout: 30_000,
+    });
+  }
+
   markProfileUsed(profileId);
   // Mirror to remote storage if configured (fire-and-forget).
   pushToRemote(profileId).catch(() => {
     // logged inside
+  });
+}
+
+/**
+ * Stream the contents of /home/agent/.claude out of a sandbox pod via
+ * `kubectl exec tar`, pipe through a local `tar xf -`, and land them in
+ * destDir. Replaces the docker-mode `exec tar | tar` pipeline.
+ */
+function k8sTarExtract(podName: string, destDir: string): Promise<void> {
+  const namespace = process.env.VIVI_K8S_NAMESPACE || "vivi";
+  return new Promise((resolve, reject) => {
+    const kubectl = spawn("kubectl", [
+      "exec", "-n", namespace, podName, "-c", "sandbox",
+      "--", "tar", "cf", "-", "-C", "/home/agent/.claude", ".",
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+    const untar = spawn("tar", ["xf", "-", "-C", destDir], { stdio: ["pipe", "ignore", "pipe"] });
+
+    const kubectlErr: Buffer[] = [];
+    const untarErr: Buffer[] = [];
+    kubectl.stderr!.on("data", (c: Buffer) => kubectlErr.push(c));
+    untar.stderr!.on("data", (c: Buffer) => untarErr.push(c));
+
+    kubectl.stdout!.pipe(untar.stdin!);
+
+    const timer = setTimeout(() => {
+      kubectl.kill(); untar.kill();
+      reject(new Error("k8s profile save timed out after 60s"));
+    }, 60_000);
+
+    let done = 0;
+    const finish = (err?: Error) => {
+      done++;
+      if (err) {
+        clearTimeout(timer);
+        kubectl.kill(); untar.kill();
+        reject(err);
+        return;
+      }
+      if (done >= 2) {
+        clearTimeout(timer);
+        resolve();
+      }
+    };
+
+    kubectl.on("exit", (code) => {
+      if (code !== 0) finish(new Error(`kubectl exec tar exited ${code}: ${Buffer.concat(kubectlErr).toString()}`));
+      else finish();
+    });
+    untar.on("exit", (code) => {
+      if (code !== 0) finish(new Error(`tar xf exited ${code}: ${Buffer.concat(untarErr).toString()}`));
+      else finish();
+    });
+    kubectl.on("error", (err) => finish(err));
+    untar.on("error", (err) => finish(err));
   });
 }
 
