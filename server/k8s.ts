@@ -523,15 +523,12 @@ export async function createSandboxPod(opts: SandboxPodOptions): Promise<string>
       spec: {
         restartPolicy: "Never",
         enableServiceLinks: false,
-        initContainers: [{
-          name: BUNDLE_INIT_CONTAINER,
-          image: SANDBOX_IMAGE,
-          imagePullPolicy: "IfNotPresent",
-          command: ["sh", "-c", "while [ ! -f /staging/.ready ]; do sleep 0.3; done"],
-          volumeMounts: [{ name: "staging", mountPath: "/staging" }],
-        }],
+        // No init container — sandbox entrypoint clones from $GIT_REMOTE_URL
+        // directly (via the MITM proxy, which injects the host-side PAT).
         containers: PODMAN_ENABLED ? [sandboxContainer, podmanContainer] : [sandboxContainer],
         volumes: [
+          // /staging is mounted but stays empty; entrypoint falls back to
+          // remote clone when /staging/repo.bundle is absent.
           { name: "staging", emptyDir: {} },
           { name: "workspace", emptyDir: {} },
           { name: "proxy-ca", configMap: { name: "proxy-ca", optional: true } },

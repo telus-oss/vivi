@@ -28,6 +28,7 @@
     "ghostty-web": "^0.4.0",
     "http-proxy": "^1.18.1",
     "lucide-react": "^0.545.0",
+    "minio": "^8.0.7",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "uuid": "^11.1.0",

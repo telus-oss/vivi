@@ -124,6 +124,19 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
     throw new Error("repoPath or githubRepo is required when creating a new container");
   }
 
+  // The k8s backend has no shared filesystem with the cluster, so we don't
+  // ship local repos via git bundle there. Sandbox pods clone directly from
+  // the remote (through the MITM proxy, which injects the PAT). Require the
+  // GitHub repo flow to make this explicit.
+  if (runtime.backend === "k8s" && !config.githubRepo) {
+    throw new Error(
+      `k8s backend only supports GitHub-imported sessions\n\n` +
+      `Use the "From GitHub" tab to pick a repository instead of a local path.\n` +
+      `(The cluster has no path to your local machine — the sandbox pod clones\n` +
+      `directly from the remote.)`
+    );
+  }
+
   if (config.githubRepo && !github.getAuth()) {
     throw new Error(
       `GitHub is not connected\n\n` +
@@ -247,6 +260,9 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
         console.warn(`[container:${id}] proxy CA sync failed: ${err.message} — HTTPS interception will fall back to insecure mode`);
       }
 
+      // No init container / bundle upload — the entrypoint clones from
+      // GIT_REMOTE_URL directly (through the MITM proxy, which injects PAT
+      // auth from the host-side secret store).
       const podName = await k8sBackend.createSandboxPod({
         sessionId: id,
         branch,
@@ -257,8 +273,6 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
         extraEnv: getSandboxEnv(),
       });
 
-      await k8sBackend.waitForInitContainerRunning(podName, SANDBOX_READY_TIMEOUT);
-      await k8sBackend.uploadBundle(podName, bundlePath);
       await k8sBackend.waitForSandboxReady(podName, SANDBOX_READY_TIMEOUT);
 
       session.containerId = podName;
@@ -324,6 +338,8 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
     // Validate profile if provided
     let profileDir: string | null = null;
     if (config.profileId) {
+      // Pull from S3 if local copy is missing (no-op if storage is disabled).
+      await profiles.ensureLocalProfile(config.profileId);
       profileDir = profiles.getProfileDir(config.profileId);
       if (!fs.existsSync(profileDir)) {
         fs.mkdirSync(profileDir, { recursive: true });

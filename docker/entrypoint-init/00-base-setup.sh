@@ -14,10 +14,17 @@ if [ -f /proxy-ca/ca-cert.pem ]; then
   echo "[sandbox] Installed proxy CA certificate"
 fi
 
-# Clone repo from bundle if workspace is empty
+# Clone repo from bundle if workspace is empty (docker/podman backend path).
 if [ -f /staging/repo.bundle ] && [ ! -d /workspace/.git ]; then
   echo "[sandbox] Cloning repo from bundle..."
   git clone /staging/repo.bundle /workspace 2>&1
+  echo "[sandbox] Clone complete"
+# k8s backend path: no host-side bundle, clone straight from the remote.
+# Credentials are injected at the MITM proxy layer (the in-pod git CLI sends
+# placeholder/empty creds; the proxy swaps in the real PAT).
+elif [ -z "$(ls -A /workspace 2>/dev/null)" ] && [ -n "$GIT_REMOTE_URL" ]; then
+  echo "[sandbox] Cloning repo from remote: $GIT_REMOTE_URL"
+  git clone "$GIT_REMOTE_URL" /workspace 2>&1
   echo "[sandbox] Clone complete"
 fi
 

@@ -1,15 +1,22 @@
 /**
  * Named Claude profiles — each profile is a ~/.claude snapshot stored on the host.
  * Files live in data/profiles/{id}/claude/; SQLite holds metadata.
+ *
+ * When VIVI_S3_ENDPOINT is set (e.g. pointing at the chart's MinIO Deployment
+ * or external S3), every save is also pushed to the bucket and missing
+ * local copies are pulled back lazily. The host-local copy stays the source
+ * of truth for the active read path; S3 is durability.
  */
 
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { execSync } from "node:child_process";
 import db from "./db.js";
 import { runtime } from "./runtime.js";
 import { paths } from "./paths.js";
+import * as storage from "./profile-storage.js";
 
 export interface Profile {
   id: string;
@@ -78,6 +85,10 @@ export function deleteProfile(id: string): void {
   if (fs.existsSync(dir)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+  // Best-effort remote cleanup.
+  storage.deleteProfile(id).catch(() => {
+    // already logged inside
+  });
 }
 
 export function markProfileUsed(id: string): void {
@@ -95,4 +106,68 @@ export function saveProfileFromContainer(profileId: string, containerName: strin
     timeout: 30_000,
   });
   markProfileUsed(profileId);
+  // Mirror to remote storage if configured (fire-and-forget).
+  pushToRemote(profileId).catch(() => {
+    // logged inside
+  });
+}
+
+/**
+ * Tar-gzip the local profile directory and upload it to the configured
+ * S3/MinIO bucket. No-op when remote storage is disabled.
+ *
+ * Resolves true on success or when storage is disabled (caller's flow is
+ * unaffected); resolves false when the upload itself failed.
+ */
+async function pushToRemote(profileId: string): Promise<boolean> {
+  if (!storage.isEnabled()) return true;
+  const dir = getProfileDir(profileId);
+  if (!fs.existsSync(dir)) return false;
+  const tmp = path.join(os.tmpdir(), `vivi-profile-${profileId}-${Date.now()}.tar.gz`);
+  try {
+    execSync(`tar czf ${JSON.stringify(tmp)} -C ${JSON.stringify(dir)} .`, {
+      stdio: "pipe",
+      timeout: 30_000,
+    });
+    return await storage.uploadProfile(profileId, tmp);
+  } catch (err: any) {
+    console.warn(`[profiles] pushToRemote failed for ${profileId}: ${err.message}`);
+    return false;
+  } finally {
+    try { fs.unlinkSync(tmp); } catch {
+      // best-effort
+    }
+  }
+}
+
+/**
+ * Restore a profile from remote storage if the local directory is missing.
+ * Returns true if the profile is now available locally (either was already
+ * present or was successfully pulled), false otherwise. Safe to call before
+ * mounting a profile into a sandbox.
+ */
+export async function ensureLocalProfile(profileId: string): Promise<boolean> {
+  const dir = getProfileDir(profileId);
+  if (fs.existsSync(dir) && fs.readdirSync(dir).length > 0) return true;
+  if (!storage.isEnabled()) return fs.existsSync(dir);
+
+  const tmp = path.join(os.tmpdir(), `vivi-profile-${profileId}-${Date.now()}.tar.gz`);
+  try {
+    const ok = await storage.downloadProfile(profileId, tmp);
+    if (!ok) return fs.existsSync(dir);
+    fs.mkdirSync(dir, { recursive: true });
+    execSync(`tar xzf ${JSON.stringify(tmp)} -C ${JSON.stringify(dir)}`, {
+      stdio: "pipe",
+      timeout: 30_000,
+    });
+    console.log(`[profiles] Restored profile ${profileId} from remote storage`);
+    return true;
+  } catch (err: any) {
+    console.warn(`[profiles] ensureLocalProfile failed for ${profileId}: ${err.message}`);
+    return false;
+  } finally {
+    try { fs.unlinkSync(tmp); } catch {
+      // best-effort
+    }
+  }
 }
