@@ -556,11 +556,18 @@ export async function createSandboxPod(opts: SandboxPodOptions): Promise<string>
   const env = Object.entries(baseEnv).map(([name, value]) => ({ name, value }));
 
   // ── Sandbox container ────────────────────────────────────────────────
-  // Memory limit defaults to 4Gi — Claude Code, code-server, the agent's
-  // own workload (npm/bun/cargo/etc.), and a long-running shell history
-  // easily exceed 1Gi during a real session. The chart's LimitRange
-  // default is conservative on purpose; sandboxes are heavier than typical
-  // service workloads. Tunable via VIVI_K8S_SANDBOX_MEMORY_LIMIT.
+  // Per-session resources are a balance between two failure modes:
+  //  1. Too low → OOMKill when Claude Code + code-server + agent workload
+  //     pushes past the limit (saw this at 1Gi default from chart LimitRange).
+  //  2. Too high → on small hosts running other workloads, the cumulative
+  //     committed memory across sandbox+podman can drive the host into
+  //     swap-thrashing (saw this at 4Gi sandbox + 2Gi podman on a 12Gi
+  //     box also running 8Gi-RAM minecraft; load avg hit 188).
+  //
+  // 2Gi/1Gi is a defensive default that survives a typical session on a
+  // self-host. Bigger clusters can bump via VIVI_K8S_SANDBOX_MEMORY_LIMIT
+  // — operators should size based on (host RAM - other-stack memory)
+  // divided by expected concurrent sessions.
   const sandboxContainer: any = {
     name: SANDBOX_CONTAINER_NAME,
     image: SANDBOX_IMAGE,
@@ -570,12 +577,12 @@ export async function createSandboxPod(opts: SandboxPodOptions): Promise<string>
     stdin: true,
     resources: {
       requests: {
-        cpu: process.env.VIVI_K8S_SANDBOX_CPU_REQUEST || "200m",
-        memory: process.env.VIVI_K8S_SANDBOX_MEMORY_REQUEST || "512Mi",
+        cpu: process.env.VIVI_K8S_SANDBOX_CPU_REQUEST || "100m",
+        memory: process.env.VIVI_K8S_SANDBOX_MEMORY_REQUEST || "256Mi",
       },
       limits: {
-        cpu: process.env.VIVI_K8S_SANDBOX_CPU_LIMIT || "2",
-        memory: process.env.VIVI_K8S_SANDBOX_MEMORY_LIMIT || "4Gi",
+        cpu: process.env.VIVI_K8S_SANDBOX_CPU_LIMIT || "1",
+        memory: process.env.VIVI_K8S_SANDBOX_MEMORY_LIMIT || "2Gi",
       },
     },
     volumeMounts: [
@@ -628,12 +635,12 @@ export async function createSandboxPod(opts: SandboxPodOptions): Promise<string>
     },
     resources: {
       requests: {
-        cpu: process.env.VIVI_K8S_PODMAN_CPU_REQUEST || "100m",
-        memory: process.env.VIVI_K8S_PODMAN_MEMORY_REQUEST || "256Mi",
+        cpu: process.env.VIVI_K8S_PODMAN_CPU_REQUEST || "50m",
+        memory: process.env.VIVI_K8S_PODMAN_MEMORY_REQUEST || "128Mi",
       },
       limits: {
-        cpu: process.env.VIVI_K8S_PODMAN_CPU_LIMIT || "2",
-        memory: process.env.VIVI_K8S_PODMAN_MEMORY_LIMIT || "2Gi",
+        cpu: process.env.VIVI_K8S_PODMAN_CPU_LIMIT || "1",
+        memory: process.env.VIVI_K8S_PODMAN_MEMORY_LIMIT || "1Gi",
       },
     },
     volumeMounts: [
