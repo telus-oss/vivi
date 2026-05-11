@@ -114,6 +114,12 @@ spec:
             - name: VIVI_TENANT_DISPLAY_NAME
               value: {{ .Values.user.displayName | quote }}
             {{- end }}
+            {{- with .Values.viviServer.extraEnv }}
+            # Per-deployment escape hatch — set things like
+            # VIVI_K8S_SANDBOX_MEMORY_LIMIT, VIVI_K8S_PODMAN_MEMORY_LIMIT,
+            # PUBLIC_PORT_URL_BASE etc. without needing a chart change.
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           ports:
             - containerPort: 7700
               name: http

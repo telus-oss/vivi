@@ -136,6 +136,15 @@ viviServer:
   # typical github-import flow with both sandbox and podman images cached.
   sandboxReadyTimeoutMs: 120000
 
+  # Extra env vars to set on the vivi-server container. Useful for tuning
+  # things like sandbox memory limits without changing chart code, e.g.:
+  #   extraEnv:
+  #     - name: VIVI_K8S_SANDBOX_MEMORY_LIMIT
+  #       value: "4Gi"
+  #     - name: VIVI_K8S_PODMAN_MEMORY_LIMIT
+  #       value: "2Gi"
+  extraEnv: []
+
   # Base URL the UI uses for forwarded sandbox ports. The port-forward
   # subdomain (`p-<port>-<sessionPrefix>`) is prepended to this URL's host,
   # so e.g. `https://example.com` makes the UI advertise
