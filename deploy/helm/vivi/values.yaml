@@ -135,6 +135,14 @@ viviServer:
   # because of image-pull + scheduling overhead; 120s is comfortable for the
   # typical github-import flow with both sandbox and podman images cached.
   sandboxReadyTimeoutMs: 120000
+
+  # Base URL the UI uses for forwarded sandbox ports. The port-forward
+  # subdomain (`p-<port>-<sessionPrefix>`) is prepended to this URL's host,
+  # so e.g. `https://example.com` makes the UI advertise
+  # `https://p-3000-abc.example.com`. Match this to a wildcard DNS / ingress
+  # entry that routes back to vivi-server. Leave empty to fall back to
+  # HOST:PORT URLs (useful only for same-machine access).
+  publicPortUrlBase: ""
   replicas: 1
   resources:
     requests:

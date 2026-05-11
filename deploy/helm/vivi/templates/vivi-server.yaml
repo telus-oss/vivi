@@ -59,6 +59,15 @@ spec:
             # 120s is comfortable for the typical github-import flow.
             - name: SANDBOX_READY_TIMEOUT
               value: {{ .Values.viviServer.sandboxReadyTimeoutMs | default "120000" | quote }}
+            {{- if .Values.viviServer.publicPortUrlBase }}
+            # Base URL the UI advertises for forwarded sandbox ports. Should
+            # match a wildcard DNS record (e.g. *.example.com or *.example.com:8443)
+            # that resolves to whatever fronts the cluster (cloudflared,
+            # ingress, etc.). Without this the UI shows 127.0.0.1 links which
+            # only work from the same machine the server runs on.
+            - name: PUBLIC_PORT_URL_BASE
+              value: {{ .Values.viviServer.publicPortUrlBase | quote }}
+            {{- end }}
             # Bun's fetch ignores the https.Agent that @kubernetes/client-node
             # configures with the in-cluster CA, so without this it rejects
             # the API server's cert as self-signed. Pointing NODE_EXTRA_CA_CERTS
