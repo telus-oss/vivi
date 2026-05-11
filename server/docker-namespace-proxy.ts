@@ -143,6 +143,8 @@ export function cleanupSessionContainers(sessionId: string): void {
 }
 
 export async function listSessionContainers(sessionId: string): Promise<DockerContainerInfo[]> {
+  // No DinD in k8s mode — return empty list rather than spam errors.
+  if (runtime.backend === "k8s") return [];
   try {
     const { stdout } = await execAsync(
       `${runtime.bin} -H tcp://127.0.0.1:${DIND_PORT} ps -a --filter label=${SESSION_LABEL}=${sessionId} --format "{{json .}}"`,

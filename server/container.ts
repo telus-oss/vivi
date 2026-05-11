@@ -26,6 +26,7 @@ import * as profiles from "./profiles.js";
 import { runtime } from "./runtime.js";
 import * as sandboxImages from "./sandbox-images.js";
 import { paths, toHostPath } from "./paths.js";
+import * as k8sBackend from "./k8s.js";
 
 /**
  * Normalize a git remote URL to HTTPS so the in-container MITM proxy can
@@ -236,6 +237,42 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
 
     await ensureProxy();
 
+    // ── Kubernetes backend path ───────────────────────────────────────────
+    if (runtime.backend === "k8s") {
+      // CA cert lives on the proxy pod — sync it into a ConfigMap that the
+      // sandbox can mount before we create the sandbox pod.
+      try {
+        await k8sBackend.syncProxyCa();
+      } catch (err: any) {
+        console.warn(`[container:${id}] proxy CA sync failed: ${err.message} — HTTPS interception will fall back to insecure mode`);
+      }
+
+      const podName = await k8sBackend.createSandboxPod({
+        sessionId: id,
+        branch,
+        taskDescription: config.taskDescription,
+        remoteUrl,
+        hostGitName,
+        hostGitEmail,
+        extraEnv: getSandboxEnv(),
+      });
+
+      await k8sBackend.waitForInitContainerRunning(podName, SANDBOX_READY_TIMEOUT);
+      await k8sBackend.uploadBundle(podName, bundlePath);
+      await k8sBackend.waitForSandboxReady(podName, SANDBOX_READY_TIMEOUT);
+
+      session.containerId = podName;
+      session.status = "running";
+
+      db.prepare(`
+        INSERT OR REPLACE INTO active_containers (session_id, container_ref, container_id, repo_path, repo_name, branch, started_at, profile_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(id, id, podName, repoPath, repoName, branch, session.startedAt, config.profileId ?? null);
+
+      return { ...session };
+    }
+
+    // ── Local Docker/Podman backend (existing path) ──────────────────────
     // Start per-session Docker socket proxy (namespaces dind access for this session)
     const proxyInfo = await startSessionProxy(id);
 
@@ -421,24 +458,33 @@ export async function stopSession(sessionId: string): Promise<void> {
       }
     }
 
-    try {
-      execSync(`${runtime.bin} rm -f ${containerName}`, { stdio: "pipe", timeout: 30_000 });
-      console.log(`[container:${sessionId}] Removed container ${containerName}`);
-    } catch (err: any) {
-      console.warn(`[container:${sessionId}] Failed to remove container ${containerName}: ${err.message}`);
-    }
+    if (runtime.backend === "k8s") {
+      await k8sBackend.deletePod(containerName).catch((err: any) => {
+        console.warn(`[container:${sessionId}] Failed to delete pod ${containerName}: ${err.message}`);
+      });
+    } else {
+      try {
+        execSync(`${runtime.bin} rm -f ${containerName}`, { stdio: "pipe", timeout: 30_000 });
+        console.log(`[container:${sessionId}] Removed container ${containerName}`);
+      } catch (err: any) {
+        console.warn(`[container:${sessionId}] Failed to remove container ${containerName}: ${err.message}`);
+      }
 
-    // Remove the workspace volume (explicit stop = intentional cleanup)
-    try {
-      execSync(`${runtime.bin} volume rm vivi-workspace-${containerRef}`, { stdio: "pipe", timeout: 10_000 });
-      console.log(`[container:${sessionId}] Removed workspace volume vivi-workspace-${containerRef}`);
-    } catch (err: any) {
-      console.warn(`[container:${sessionId}] Failed to remove workspace volume: ${err.message}`);
+      // Remove the workspace volume (explicit stop = intentional cleanup)
+      try {
+        execSync(`${runtime.bin} volume rm vivi-workspace-${containerRef}`, { stdio: "pipe", timeout: 10_000 });
+        console.log(`[container:${sessionId}] Removed workspace volume vivi-workspace-${containerRef}`);
+      } catch (err: any) {
+        console.warn(`[container:${sessionId}] Failed to remove workspace volume: ${err.message}`);
+      }
     }
 
     // Clean up dind containers for this session and stop the socket proxy
-    cleanupSessionContainers(containerRef);
-    stopSessionProxy(containerRef);
+    // (no-op on k8s — namespace-scoped pods can't escape the namespace)
+    if (runtime.backend !== "k8s") {
+      cleanupSessionContainers(containerRef);
+      stopSessionProxy(containerRef);
+    }
 
     try {
       const sessionStagingDir = path.join(STAGING_DIR, containerRef);
@@ -463,6 +509,12 @@ export async function stopSession(sessionId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function ensureProxy(): Promise<void> {
+  // Kubernetes backend: ensure the in-cluster proxy Deployment + Service exist.
+  if (runtime.backend === "k8s") {
+    await k8sBackend.ensureInfra();
+    return;
+  }
+
   // When running inside docker-compose.full.yml, proxy and dind are managed externally
   if (process.env.MANAGED_COMPOSE === "1") {
     console.log("[proxy] Managed by external compose — skipping ensureProxy");
@@ -517,6 +569,11 @@ async function ensureProxy(): Promise<void> {
 }
 
 async function stopProxy(): Promise<void> {
+  if (runtime.backend === "k8s") {
+    // The proxy Deployment is left running in the cluster — cheap to keep up,
+    // and tearing it down on every "last session ended" causes churn.
+    return;
+  }
   if (process.env.MANAGED_COMPOSE === "1") {
     console.log("[proxy] Managed by external compose — skipping stopProxy");
     return;
@@ -553,6 +610,38 @@ export async function restoreSessions(): Promise<void> {
 
   for (const row of rows) {
     const containerName = `vivi-sandbox-${row.container_ref}`;
+
+    // K8s restore: just check pod phase. No volume-restart path — pods aren't
+    // restartable like docker containers, and the workspace is an emptyDir
+    // that dies with the pod anyway.
+    if (runtime.backend === "k8s") {
+      try {
+        const phase = await k8sBackend.getPodPhase(containerName);
+        if (phase === "Running") {
+          const session: SessionState = {
+            id: row.session_id,
+            status: "running",
+            repoPath: row.repo_path,
+            repoName: row.repo_name,
+            branch: row.branch,
+            containerId: row.container_id,
+            containerRef: row.container_ref,
+            error: null,
+            startedAt: row.started_at,
+          };
+          sessions.set(row.session_id, session);
+          console.log(`[container:${row.session_id}] Restored running pod ${containerName}`);
+        } else {
+          console.log(`[container:${row.session_id}] Pod ${containerName} phase=${phase}, cleaning up`);
+          db.prepare("DELETE FROM active_containers WHERE session_id = ?").run(row.session_id);
+        }
+      } catch (err: any) {
+        console.log(`[container:${row.session_id}] Pod restore failed (${err.message}), cleaning up`);
+        db.prepare("DELETE FROM active_containers WHERE session_id = ?").run(row.session_id);
+      }
+      continue;
+    }
+
     try {
       const status = execSync(
         `${runtime.bin} inspect --format '{{.State.Status}}' ${containerName}`,

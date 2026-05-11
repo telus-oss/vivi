@@ -34,6 +34,7 @@ import * as githubIssues from "./github-issues.js";
 import * as github from "./github.js";
 import * as profiles from "./profiles.js";
 import * as secretRequests from "./secret-requests.js";
+import * as k8sBackend from "./k8s.js";
 import rateLimit from "express-rate-limit";
 
 process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
@@ -176,12 +177,21 @@ app.get("/api/sessions/:id/logs", limiter("sessionExpensive"), async (req, res) 
     const tail = parseInt(req.query.tail as string) || 200;
     // Cap tail at 2000 to prevent abuse
     const safeTail = Math.min(tail, 2000);
-    const result = await execFileAsync(
-      runtime.bin, ["logs", "--tail", String(safeTail), containerName],
-      { encoding: "utf-8", timeout: 10_000, maxBuffer: 5 * 1024 * 1024 },
-    );
-    // docker logs sends stdout/stderr on separate streams; merge them like the original 2>&1
-    const logs = (result.stdout || "") + (result.stderr || "");
+    let logs: string;
+    if (runtime.backend === "k8s") {
+      // proxy/dind sources don't apply in k8s mode — only the sandbox pod has logs we can pull this way.
+      if (source !== "sandbox") {
+        return res.status(400).json({ error: `log source "${source}" not supported in k8s backend` });
+      }
+      logs = await k8sBackend.readPodLogs(containerName, safeTail);
+    } else {
+      const result = await execFileAsync(
+        runtime.bin, ["logs", "--tail", String(safeTail), containerName],
+        { encoding: "utf-8", timeout: 10_000, maxBuffer: 5 * 1024 * 1024 },
+      );
+      // docker logs sends stdout/stderr on separate streams; merge them like the original 2>&1
+      logs = (result.stdout || "") + (result.stderr || "");
+    }
     res.json({ logs });
   } catch (err: any) {
     console.error("[logs] Failed to fetch container logs for session %s:", req.params.id, err.message);
@@ -198,10 +208,18 @@ app.get("/api/sessions/:id/diff", limiter("sessionExpensive"), async (req, res) 
     const containerName = container.getContainerName(req.params.id);
     // Show all changes (committed + uncommitted + untracked) compared to the
     // base branch, so the diff reflects everything the sandbox has done.
-    const { stdout: diff } = await execFileAsync(
-      runtime.bin, ["exec", containerName, "bash", "-c", 'cd /workspace && git add -N . 2>/dev/null; BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo refs/remotes/origin/main); git diff "$BASE"'],
-      { encoding: "utf-8", timeout: 30_000, maxBuffer: 10 * 1024 * 1024 },
-    );
+    const cmd = ["bash", "-c", 'cd /workspace && git add -N . 2>/dev/null; BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo refs/remotes/origin/main); git diff "$BASE"'];
+    let diff: string;
+    if (runtime.backend === "k8s") {
+      const result = await k8sBackend.execCapture(containerName, cmd, { timeoutMs: 30_000 });
+      diff = result.stdout;
+    } else {
+      const result = await execFileAsync(
+        runtime.bin, ["exec", containerName, ...cmd],
+        { encoding: "utf-8", timeout: 30_000, maxBuffer: 10 * 1024 * 1024 },
+      );
+      diff = result.stdout;
+    }
     res.json({ diff });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -219,11 +237,18 @@ app.get("/api/sessions/:id/file", limiter("sessionExpensive"), async (req, res) 
   if (!resolved.startsWith("/workspace/")) return res.status(400).json({ error: "Invalid file path" });
   try {
     const containerName = container.getContainerName(req.params.id);
-    const { stdout: content } = await execFileAsync(
-      runtime.bin,
-      ["exec", containerName, "cat", `/workspace/${filePath}`],
-      { encoding: "utf-8", timeout: 30_000 },
-    );
+    let content: string;
+    if (runtime.backend === "k8s") {
+      const result = await k8sBackend.execCapture(containerName, ["cat", `/workspace/${filePath}`], { timeoutMs: 30_000 });
+      content = result.stdout;
+    } else {
+      const result = await execFileAsync(
+        runtime.bin,
+        ["exec", containerName, "cat", `/workspace/${filePath}`],
+        { encoding: "utf-8", timeout: 30_000 },
+      );
+      content = result.stdout;
+    }
     res.json({ content, path: filePath });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

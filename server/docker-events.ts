@@ -38,6 +38,13 @@ const RELEVANT_STATUSES = new Set([
 function startProcess(): void {
   if (eventsProcess) return;
 
+  // No DinD on the k8s backend (yet) — sandbox-launched containers go through
+  // a different model (sysbox / kaniko / per-namespace dind), so this event
+  // stream has nothing to subscribe to.
+  if (runtime.backend === "k8s") {
+    return;
+  }
+
   // Podman CLI cannot talk to the Docker DinD daemon — it uses the libpod API
   // instead of the Docker Engine API. Skip the event stream for Podman; the
   // Docker-in-Docker container monitoring feature is unavailable in this mode.

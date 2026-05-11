@@ -1,42 +1,65 @@
 /**
- * Container runtime detection — supports Docker and Podman.
+ * Container runtime detection — supports Docker, Podman, and Kubernetes.
  *
- * Detection order:
- *   1. CONTAINER_RUNTIME env var ("docker" or "podman")
- *   2. Auto-detect: try docker first, fall back to podman
+ * Selection:
+ *   1. VIVI_BACKEND=k8s        — Kubernetes mode (uses @kubernetes/client-node)
+ *   2. CONTAINER_RUNTIME env   — "docker" or "podman" (local-daemon mode)
+ *   3. Auto-detect             — try docker first, fall back to podman
  *
- * Exports a resolved config object used by all server modules
- * that invoke container CLI commands.
+ * In k8s mode `bin` is still set (to "docker") so the few host-side shell-outs
+ * that aren't sandbox-related (e.g. `git bundle create` on the host) still work
+ * — but every sandbox-side `bin exec`/`bin run` call site MUST branch on
+ * `runtime.backend === "k8s"` before invoking the CLI.
  */
 
 import { execSync } from "node:child_process";
 
+export type Backend = "docker" | "podman" | "k8s";
+
 export interface ContainerRuntime {
-  /** CLI binary name: "docker" or "podman" */
+  /** Which backend will host the sandboxes. */
+  backend: Backend;
+  /** CLI binary name: "docker" or "podman". Unused for sandbox ops when backend === "k8s". */
   bin: string;
-  /** Compose command for execSync string interpolation: "docker compose" or "podman compose" */
+  /** Compose command. Unused when backend === "k8s". */
   composeBin: string;
 }
 
 function detect(): ContainerRuntime {
+  if (process.env.VIVI_BACKEND?.toLowerCase() === "k8s") {
+    // Host still needs a container CLI for `git bundle create` (no — that's pure git);
+    // pick docker if present, podman if not, neither is also fine for k8s mode.
+    let bin = "docker";
+    for (const candidate of ["docker", "podman"] as const) {
+      try {
+        execSync(`${candidate} --version`, { stdio: "pipe", timeout: 5_000 });
+        bin = candidate;
+        break;
+      } catch {
+        // try next
+      }
+    }
+    return { backend: "k8s", bin, composeBin: `${bin} compose` };
+  }
+
   const override = process.env.CONTAINER_RUNTIME?.toLowerCase();
   if (override === "docker" || override === "podman") {
     verify(override);
-    return resolve(override);
+    return resolveLocal(override);
   }
 
   // Auto-detect: prefer docker, fall back to podman
   for (const bin of ["docker", "podman"] as const) {
     try {
       execSync(`${bin} --version`, { stdio: "pipe", timeout: 5_000 });
-      return resolve(bin);
+      return resolveLocal(bin);
     } catch {
       // not available, try next
     }
   }
 
   throw new Error(
-    "Neither docker nor podman found in PATH. Install one of them to use Vivi."
+    "Neither docker nor podman found in PATH. Install one of them, or set VIVI_BACKEND=k8s to use a Kubernetes cluster.",
   );
 }
 
@@ -50,8 +73,9 @@ function verify(bin: string): void {
   }
 }
 
-function resolve(bin: string): ContainerRuntime {
+function resolveLocal(bin: string): ContainerRuntime {
   return {
+    backend: bin as Backend,
     bin,
     composeBin: `${bin} compose`,
   };
@@ -59,4 +83,4 @@ function resolve(bin: string): ContainerRuntime {
 
 export const runtime = detect();
 
-console.log(`[runtime] Container runtime: ${runtime.bin}`);
+console.log(`[runtime] Backend: ${runtime.backend}${runtime.backend !== "k8s" ? ` (CLI: ${runtime.bin})` : ""}`);

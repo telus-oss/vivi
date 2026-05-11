@@ -21,6 +21,7 @@ import { listSessionContainers, inspectContainer, streamContainerLogs, type Dock
 import { subscribeSession } from "./docker-events.js";
 import { onSecretRequestUpdate } from "./secret-requests.js";
 import type { ChildProcess } from "node:child_process";
+import * as k8sBackend from "./k8s.js";
 
 // Per-session activity monitors
 const monitors: Map<string, ActivityMonitor> = new Map();
@@ -30,7 +31,105 @@ interface BunPty {
   write(data: string): void;
   resize(cols: number, rows: number): void;
   kill(): void;
-  readonly proc: ReturnType<typeof Bun.spawn>;
+  /** Underlying Bun process — only set for docker/podman backends, undefined for k8s. */
+  readonly proc?: ReturnType<typeof Bun.spawn>;
+}
+
+/**
+ * Spawn a PTY connected to a sandbox container, picking the right backend.
+ *
+ * `containerArgv` is the command + args to run *inside* the container,
+ * e.g. ["claude", "--dangerously-skip-permissions"] or ["/bin/bash"].
+ *
+ * For docker/podman: wraps `Bun.spawn(runtime.bin, ["exec", "-it", "-u", "agent", ...])`.
+ * For k8s: returns immediately with a buffered handle while the k8s exec
+ * WebSocket connects in the background. Writes before the WS is open are
+ * queued and drained on connect.
+ */
+function spawnContainerPty(
+  containerName: string,
+  containerArgv: string[],
+  opts: { cols: number; rows: number; userAgent?: boolean },
+  onData: (data: string) => void,
+  onExit: (exitCode: number) => void,
+): BunPty {
+  if (runtime.backend === "k8s") {
+    return spawnK8sContainerPty(containerName, containerArgv, opts, onData, onExit);
+  }
+  const localArgs = [
+    "exec", "-it",
+    ...(opts.userAgent ? ["-u", "agent"] : []),
+    "-e", "TERM=xterm-256color",
+    containerName,
+    ...containerArgv,
+  ];
+  return spawnPty(runtime.bin, localArgs, opts, onData, onExit);
+}
+
+/**
+ * K8s flavour of spawnContainerPty: returns a synchronous handle that buffers
+ * writes until the k8s exec WS is ready. The k8s sandbox image runs as PID 1
+ * already under `agent` via `gosu agent ...` in the entrypoint — but the
+ * default exec runs as root, so we shell out via `gosu agent` here too.
+ */
+function spawnK8sContainerPty(
+  podName: string,
+  containerArgv: string[],
+  opts: { cols: number; rows: number; userAgent?: boolean },
+  onData: (data: string) => void,
+  onExit: (exitCode: number) => void,
+): BunPty {
+  const writeQueue: string[] = [];
+  let connected: k8sBackend.K8sPtyHandle | null = null;
+  let pendingResize: { cols: number; rows: number } | null = { cols: opts.cols, rows: opts.rows };
+  let killed = false;
+
+  // The sandbox image's entrypoint switches to `agent` for the main process,
+  // but exec into the pod lands as root. Use gosu to drop privs.
+  const argv = opts.userAgent
+    ? ["gosu", "agent", "env", "TERM=xterm-256color", ...containerArgv]
+    : ["env", "TERM=xterm-256color", ...containerArgv];
+
+  (async () => {
+    try {
+      const handle = await k8sBackend.createPty(
+        podName, argv, opts, onData,
+        (code) => onExit(code),
+      );
+      if (killed) {
+        try { handle.kill(); } catch {
+          // already dead
+        }
+        return;
+      }
+      connected = handle;
+      for (const data of writeQueue) handle.write(data);
+      writeQueue.length = 0;
+      if (pendingResize) {
+        handle.resize(pendingResize.cols, pendingResize.rows);
+        pendingResize = null;
+      }
+    } catch (err: any) {
+      console.error(`[pty:k8s] Failed to start exec for ${podName}: ${err.message}`);
+      onData(`\r\n[k8s exec failed: ${err.message}]\r\n`);
+      onExit(1);
+    }
+  })();
+
+  return {
+    write(data: string) {
+      if (connected) connected.write(data);
+      else writeQueue.push(data);
+    },
+    resize(cols: number, rows: number) {
+      if (connected) connected.resize(cols, rows);
+      else pendingResize = { cols, rows };
+    },
+    kill() {
+      killed = true;
+      if (connected) connected.kill();
+    },
+  };
 }
 
 // Per-session Claude PTY processes (for sending intervention commands)
@@ -234,10 +333,10 @@ function handleTerminalConnection(ws: WebSocket, url: URL) {
       const containerName = getContainerName(sessionId);
       let ptyHandle: BunPty;
       try {
-        ptyHandle = spawnPty(
-          runtime.bin,
-          ["exec", "-it", "-u", "agent", "-e", "TERM=xterm-256color", containerName, "claude", "--dangerously-skip-permissions"],
-          { cols, rows },
+        ptyHandle = spawnContainerPty(
+          containerName,
+          ["claude", "--dangerously-skip-permissions"],
+          { cols, rows, userAgent: true },
           // onData — PTY → all subscribers + rolling buffer + monitor
           (data: string) => {
             const p = persistentClaudeSessions.get(sessionId);
@@ -324,15 +423,7 @@ function handleTerminalConnection(ws: WebSocket, url: URL) {
   }
 
   // ── setup-token / shell modes: transient PTY per connection ─────────────────
-  let cmd: string;
-  let args: string[];
-
-  if (mode === "setup-token") {
-    resetCapture();
-    cmd = "claude";
-    args = ["setup-token"];
-  } else {
-    // shell
+  if (mode === "shell") {
     if (!sessionId) {
       ws.send(JSON.stringify({ type: "error", message: "Missing sessionId query parameter." }));
       ws.close();
@@ -348,29 +439,32 @@ function handleTerminalConnection(ws: WebSocket, url: URL) {
       ws.close();
       return;
     }
-
-    const containerName = getContainerName(sessionId);
-    cmd = runtime.bin;
-    args = ["exec", "-it", "-u", "agent", containerName, "/bin/bash"];
+  } else if (mode === "setup-token") {
+    resetCapture();
   }
+
+  const onData = (data: string) => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(data);
+    if (mode === "setup-token") ingestSetupTokenOutput(data);
+  };
+  const onExit = (exitCode: number) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(`\r\n[Process exited with code ${exitCode}]\r\n`);
+      ws.close();
+    }
+    ptySessions.delete(ptySessionId);
+  };
 
   let ptyHandle: BunPty;
   try {
-    ptyHandle = spawnPty(cmd, args, { cols, rows },
-      // onData
-      (data: string) => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(data);
-        if (mode === "setup-token") ingestSetupTokenOutput(data);
-      },
-      // onExit
-      (exitCode: number) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(`\r\n[Process exited with code ${exitCode}]\r\n`);
-          ws.close();
-        }
-        ptySessions.delete(ptySessionId);
-      },
-    );
+    if (mode === "setup-token") {
+      // `claude setup-token` runs on the host, not in the sandbox.
+      ptyHandle = spawnPty("claude", ["setup-token"], { cols, rows }, onData, onExit);
+    } else {
+      const containerName = getContainerName(sessionId);
+      ptyHandle = spawnContainerPty(containerName, ["/bin/bash"],
+        { cols, rows, userAgent: true }, onData, onExit);
+    }
   } catch (err: any) {
     // fatal: true prevents the client from auto-reconnecting and wiping the
     // error message — a spawn failure (missing CLI, unsupported platform) will
