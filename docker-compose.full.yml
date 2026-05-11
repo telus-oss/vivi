@@ -35,6 +35,9 @@ services:
       # Docker daemon, bind-mount paths must resolve on the host, not in this
       # container. The CLI passes the real host path here.
       - HOST_DATA_DIR=${VIVI_DATA_DIR}
+      # DIND lives on the same user-defined bridge; reach it by service name
+      # (the app's own loopback isn't the host's loopback).
+      - DIND_HOST=dind
     volumes:
       - ${VIVI_DATA_DIR}:/app/data
       - ${VIVI_CONFIG_DIR}:/app/config
