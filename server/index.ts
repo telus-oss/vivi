@@ -1268,14 +1268,24 @@ async function gracefulShutdown(signal: string) {
   server.close(() => {
     console.log("[vivi] HTTP server closed");
   });
-  // Stop all active sessions
+  // In k8s mode the sandbox pods are independent of the vivi-server pod —
+  // a server restart (helm upgrade, eviction, OOMKill) should leave them
+  // running so the new server pod can re-attach via restoreSessions() on
+  // boot. Only release this server's in-memory resources (port-forwards,
+  // monitors) here; do NOT call stopSession, which would `kubectl delete`
+  // the pod and lose the workspace volume + any in-flight agent state.
   const activeSessions = container.getSessions();
+  const isK8s = runtime.backend === "k8s";
   for (const session of activeSessions) {
     try {
       ports.closeAllPorts(session.id);
       removeMonitor(session.id);
-      await container.stopSession(session.id);
-      console.log(`[vivi] Stopped session ${session.id}`);
+      if (!isK8s) {
+        await container.stopSession(session.id);
+        console.log(`[vivi] Stopped session ${session.id}`);
+      } else {
+        console.log(`[vivi] Detached from session ${session.id} (pod left running for restore)`);
+      }
     } catch (err: any) {
       console.warn(`[vivi] Failed to stop session ${session.id}: ${err.message}`);
     }
