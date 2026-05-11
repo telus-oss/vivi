@@ -556,6 +556,11 @@ export async function createSandboxPod(opts: SandboxPodOptions): Promise<string>
   const env = Object.entries(baseEnv).map(([name, value]) => ({ name, value }));
 
   // ── Sandbox container ────────────────────────────────────────────────
+  // Memory limit defaults to 4Gi — Claude Code, code-server, the agent's
+  // own workload (npm/bun/cargo/etc.), and a long-running shell history
+  // easily exceed 1Gi during a real session. The chart's LimitRange
+  // default is conservative on purpose; sandboxes are heavier than typical
+  // service workloads. Tunable via VIVI_K8S_SANDBOX_MEMORY_LIMIT.
   const sandboxContainer: any = {
     name: SANDBOX_CONTAINER_NAME,
     image: SANDBOX_IMAGE,
@@ -563,6 +568,16 @@ export async function createSandboxPod(opts: SandboxPodOptions): Promise<string>
     env,
     tty: true,
     stdin: true,
+    resources: {
+      requests: {
+        cpu: process.env.VIVI_K8S_SANDBOX_CPU_REQUEST || "200m",
+        memory: process.env.VIVI_K8S_SANDBOX_MEMORY_REQUEST || "512Mi",
+      },
+      limits: {
+        cpu: process.env.VIVI_K8S_SANDBOX_CPU_LIMIT || "2",
+        memory: process.env.VIVI_K8S_SANDBOX_MEMORY_LIMIT || "4Gi",
+      },
+    },
     volumeMounts: [
       { name: "staging", mountPath: "/staging", readOnly: true },
       { name: "workspace", mountPath: "/workspace" },
@@ -609,6 +624,16 @@ export async function createSandboxPod(opts: SandboxPodOptions): Promise<string>
         // The sidecar container itself is still confined by the kubelet's
         // seccomp profile; only podman's *sub-containers* run with these caps.
         add: ["SYS_ADMIN", "SYS_RESOURCE", "SETUID", "SETGID", "SYS_CHROOT", "CHOWN", "DAC_OVERRIDE", "FOWNER", "MKNOD", "NET_RAW"],
+      },
+    },
+    resources: {
+      requests: {
+        cpu: process.env.VIVI_K8S_PODMAN_CPU_REQUEST || "100m",
+        memory: process.env.VIVI_K8S_PODMAN_MEMORY_REQUEST || "256Mi",
+      },
+      limits: {
+        cpu: process.env.VIVI_K8S_PODMAN_CPU_LIMIT || "2",
+        memory: process.env.VIVI_K8S_PODMAN_MEMORY_LIMIT || "2Gi",
       },
     },
     volumeMounts: [
