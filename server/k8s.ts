@@ -201,6 +201,12 @@ export async function ensureInfra(): Promise<void> {
 }
 
 async function ensureNamespace(): Promise<void> {
+  // In-cluster mode: the Vivi server is *running in* the namespace, so it
+  // must already exist. Don't try to read it — that's a cluster-scoped op
+  // and the chart's RBAC intentionally only grants in-namespace permissions
+  // (no `namespaces` get). Skip the check entirely.
+  if (IN_CLUSTER) return;
+
   const { core } = await clients();
   try {
     await core.readNamespace({ name: NAMESPACE });
