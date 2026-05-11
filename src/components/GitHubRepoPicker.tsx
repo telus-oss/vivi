@@ -27,25 +27,53 @@ export function GitHubRepoPicker({ value, onChange, onNotConnected }: GitHubRepo
   const [branchesError, setBranchesError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const loadRepos = useCallback(async (opts?: { refresh?: boolean }) => {
+  // Stash the parent callback in a ref so loadRepos has stable identity even
+  // when the parent passes an inline arrow function. Without this, every App
+  // re-render (e.g. panel-resize drag) creates a new onNotConnected, which
+  // re-keys loadRepos and triggers a refetch of /github/repos.
+  const onNotConnectedRef = useRef(onNotConnected);
+  useEffect(() => { onNotConnectedRef.current = onNotConnected; }, [onNotConnected]);
+
+  // Stale-response guard: only the most recently issued request can update
+  // state. Prevents a slow earlier query from clobbering a newer one.
+  const requestIdRef = useRef(0);
+
+  const loadRepos = useCallback(async (opts?: { refresh?: boolean; search?: string }) => {
     const isRefresh = !!opts?.refresh;
     if (isRefresh) setRefreshing(true); else setLoading(true);
     setError(null);
+    const myReqId = ++requestIdRef.current;
     try {
-      const rs = await api.listGitHubRepos(undefined, isRefresh);
+      const rs = await api.listGitHubRepos(opts?.search, isRefresh);
+      if (myReqId !== requestIdRef.current) return;
       setRepos(rs);
     } catch (err: any) {
+      if (myReqId !== requestIdRef.current) return;
       setError(err.message);
       if (err.message && /not connected/i.test(err.message)) {
-        onNotConnected?.();
+        onNotConnectedRef.current?.();
       }
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (myReqId === requestIdRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, [onNotConnected]);
+  }, []);
 
-  useEffect(() => { loadRepos(); }, [loadRepos]);
+  // Fetch on mount, then debounce-refetch whenever the search term changes.
+  // Server-side search is cheap (cached repo list on the backend), so this
+  // gives accurate results without per-keystroke network traffic.
+  const didMountRef = useRef(false);
+  useEffect(() => {
+    const term = search.trim();
+    const delay = didMountRef.current ? 400 : 0;
+    didMountRef.current = true;
+    const handle = setTimeout(() => {
+      loadRepos({ search: term || undefined });
+    }, delay);
+    return () => clearTimeout(handle);
+  }, [search, loadRepos]);
 
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -131,7 +159,7 @@ export function GitHubRepoPicker({ value, onChange, onNotConnected }: GitHubRepo
           <div>{error}</div>
           <button
             type="button"
-            onClick={() => loadRepos({ refresh: true })}
+            onClick={() => loadRepos({ refresh: true, search: search.trim() || undefined })}
             className="mt-2 text-xs text-gray-300 underline hover:text-white"
           >
             Retry
@@ -156,7 +184,7 @@ export function GitHubRepoPicker({ value, onChange, onNotConnected }: GitHubRepo
         </label>
         <button
           type="button"
-          onClick={() => loadRepos({ refresh: true })}
+          onClick={() => loadRepos({ refresh: true, search: search.trim() || undefined })}
           disabled={refreshing}
           title="Refresh repository list"
           className="p-2.5 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg text-gray-400 hover:text-white disabled:opacity-50 transition-colors"
