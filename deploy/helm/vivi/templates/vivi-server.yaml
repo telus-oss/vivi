@@ -53,6 +53,12 @@ spec:
             # don't spawn `kubectl proxy`.
             - name: VIVI_K8S_IN_CLUSTER
               value: "1"
+            # k8s sandboxes take longer to reach ready than docker (image
+            # pulls + scheduling + multi-container startup). 30s default
+            # times out before the entrypoint finishes its in-pod `git clone`.
+            # 120s is comfortable for the typical github-import flow.
+            - name: SANDBOX_READY_TIMEOUT
+              value: {{ .Values.viviServer.sandboxReadyTimeoutMs | default "120000" | quote }}
             # Bun's fetch ignores the https.Agent that @kubernetes/client-node
             # configures with the in-cluster CA, so without this it rejects
             # the API server's cert as self-signed. Pointing NODE_EXTRA_CA_CERTS

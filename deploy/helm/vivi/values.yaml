@@ -129,6 +129,12 @@ viviServer:
   service:
     type: ClusterIP
     nodePort: 0   # only honored when type == NodePort; 0 lets k8s pick
+
+  # How long a single sandbox pod can take to reach "ready" before the server
+  # gives up and tears the pod down. k8s sandboxes are slower than docker
+  # because of image-pull + scheduling overhead; 120s is comfortable for the
+  # typical github-import flow with both sandbox and podman images cached.
+  sandboxReadyTimeoutMs: 120000
   replicas: 1
   resources:
     requests:
