@@ -129,7 +129,7 @@ metadata:
   labels:
     {{- include "vivi.labels" . | nindent 4 }}
 spec:
-  type: ClusterIP
+  type: {{ .Values.viviServer.service.type | default "ClusterIP" }}
   selector:
     {{- include "vivi.viviServer.selectorLabels" . | nindent 4 }}
   ports:
@@ -137,6 +137,9 @@ spec:
       targetPort: 7700
       protocol: TCP
       name: http
+      {{- if and (eq (.Values.viviServer.service.type | default "ClusterIP") "NodePort") .Values.viviServer.service.nodePort }}
+      nodePort: {{ .Values.viviServer.service.nodePort }}
+      {{- end }}
 {{- if .Values.viviServer.ingress.enabled }}
 ---
 apiVersion: networking.k8s.io/v1

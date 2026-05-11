@@ -123,6 +123,12 @@ viviServer:
   sandboxImage:
     repository: ghcr.io/telus-oss/vivi-sandbox
     tag: "" # defaults to chart's appVersion if empty
+
+  # Service shape for vivi-server. NodePort is required when fronting with an
+  # external proxy (cloudflared, nginx, etc.) that lives outside the cluster.
+  service:
+    type: ClusterIP
+    nodePort: 0   # only honored when type == NodePort; 0 lets k8s pick
   replicas: 1
   resources:
     requests:
