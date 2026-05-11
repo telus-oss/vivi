@@ -23,7 +23,7 @@ import * as secrets from "./secrets.js";
 import * as allowlist from "./allowlist.js";
 import * as sandboxImages from "./sandbox-images.js";
 import * as container from "./container.js";
-import { restoreSessions } from "./container.js";
+import { restoreSessions, startSessionHealthScan } from "./container.js";
 import * as auth from "./auth.js";
 import * as gitPolicy from "./git-policy.js";
 import * as pr from "./pr.js";
@@ -1259,7 +1259,9 @@ server.listen(PORT, BIND_ADDRESS, () => {
   console.log(`[vivi] Server running on http://${HOST}:${PORT} (bind: ${BIND_ADDRESS})`);
   console.log(`[vivi] WebSocket: ws://${HOST}:${PORT}/ws/terminal?sessionId=X`);
   console.log(`[vivi] Monitor:   ws://${HOST}:${PORT}/ws/monitor?sessionId=X`);
-  restoreSessions();
+  restoreSessions().then(() => {
+    startSessionHealthScan();
+  });
 });
 
 // --- Graceful shutdown ---

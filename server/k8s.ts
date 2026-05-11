@@ -827,11 +827,29 @@ export async function getPodPhase(podName: string): Promise<"Pending" | "Running
   const { core } = await clients();
   try {
     const pod = await core.readNamespacedPod({ name: podName, namespace: NAMESPACE });
-    return (pod.status?.phase as any) ?? "Unknown";
+    return getEffectivePhase(pod);
   } catch (err: any) {
     if (err?.code === 404 || err?.response?.statusCode === 404) return "Missing";
     throw err;
   }
+}
+
+/**
+ * Read a pod's "effective" phase — k8s reports `Running` as long as ANY
+ * container is alive, even when the sandbox container itself is terminated
+ * (because the podman sidecar is still up). For our purposes the session is
+ * dead when the sandbox container is gone, so treat the sandbox container's
+ * state as authoritative and downgrade to Failed when it's terminated.
+ */
+function getEffectivePhase(pod: any): "Pending" | "Running" | "Succeeded" | "Failed" | "Unknown" {
+  const podPhase = (pod.status?.phase as any) ?? "Unknown";
+  const containerStatuses = pod.status?.containerStatuses ?? [];
+  const sandboxStatus = containerStatuses.find((c: any) => c.name === SANDBOX_CONTAINER_NAME);
+  if (sandboxStatus?.state?.terminated) {
+    // OOMKilled / Error / Completed → session is dead from the user's POV.
+    return "Failed";
+  }
+  return podPhase;
 }
 
 export interface SandboxPodInfo {
@@ -865,7 +883,7 @@ export async function listSandboxPods(): Promise<SandboxPodInfo[]> {
     return {
       podName: meta.name || "",
       sessionId: labels["vivi.session"] || (meta.name || "").replace(/^vivi-sandbox-/, ""),
-      phase: pod.status?.phase || "Unknown",
+      phase: getEffectivePhase(pod),
       branch: annotations["vivi.io/branch"] || "",
       repoName: annotations["vivi.io/repo-name"] || "",
       repoPath: annotations["vivi.io/repo-path"] || "",

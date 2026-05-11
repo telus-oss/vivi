@@ -805,6 +805,36 @@ export async function restoreSessions(): Promise<void> {
   }
 }
 
+/**
+ * Periodic scan (k8s only) to catch sandboxes whose pod died out-of-band —
+ * e.g. OOMKilled by the kernel, evicted by k8s, manually `kubectl delete`d.
+ * Without this, the in-memory session map stays "running" indefinitely
+ * while the UI's WebSocket terminal spams "container not found" errors.
+ */
+const SESSION_HEALTH_INTERVAL_MS = Number(process.env.VIVI_SESSION_HEALTH_INTERVAL_MS) || 30_000;
+
+export function startSessionHealthScan(): void {
+  if (runtime.backend !== "k8s") return;
+  setInterval(async () => {
+    for (const session of getSessions()) {
+      if (session.status !== "running" || !session.containerId) continue;
+      try {
+        const phase = await k8sBackend.getPodPhase(session.containerId);
+        if (phase === "Running" || phase === "Pending") continue;
+        console.log(`[container:${session.id}] Pod ${session.containerId} phase=${phase} — marking error and cleaning up`);
+        session.status = "error";
+        session.error = `Sandbox pod is ${phase.toLowerCase()} (likely OOMKilled or evicted)`;
+        closeAllPorts(session.id);
+        await k8sBackend.deletePod(session.containerId).catch(() => {});
+        await k8sBackend.deleteSessionServices(session.containerRef).catch(() => {});
+        db.prepare("DELETE FROM active_containers WHERE session_id = ?").run(session.id);
+      } catch (err: any) {
+        // Transient API errors shouldn't drop the session; keep silent.
+      }
+    }
+  }, SESSION_HEALTH_INTERVAL_MS).unref();
+}
+
 async function waitForContainer(containerName: string, timeoutMs: number) {
   const start = Date.now();
   console.log(`[container] Waiting for ${containerName} (timeout: ${timeoutMs}ms)...`);
