@@ -495,13 +495,28 @@ app.post("/api/git/credentials", limiter("gitCredentials"), express.text({ type:
     const input = typeof req.body === "string" ? req.body : JSON.stringify(req.body);
 
     // If JSON format from proxy: { host, protocol }
+    let host: string | null = null;
     let credInput: string;
     try {
       const parsed = JSON.parse(input);
+      host = parsed.host ?? null;
       credInput = `protocol=${parsed.protocol || "https"}\nhost=${parsed.host}\n\n`;
     } catch {
       // Not JSON — already in git credential format
       credInput = input;
+      const hostMatch = input.match(/^host=(.+)$/m);
+      if (hostMatch) host = hostMatch[1].trim();
+    }
+
+    // Prefer Vivi's stored GitHub PAT (Secrets tab) for github.com hosts.
+    // Headless deploys often have no git credential helper / no gh login on
+    // the host, so falling through to `git credential fill` returns nothing
+    // and the proxy injects no auth — the sandbox sees a 401 from GitHub.
+    if (host === "github.com" || host === "gist.github.com") {
+      const auth = github.getAuth();
+      if (auth?.token) {
+        return res.json({ username: "x-access-token", password: auth.token });
+      }
     }
 
     const result = execSync("git credential fill", {
@@ -524,6 +539,13 @@ app.post("/api/git/credentials", limiter("gitCredentials"), express.text({ type:
 });
 
 app.get("/api/git/gh-token", limiter("gitCredentials"), (_req, res) => {
+  // Prefer Vivi's stored PAT (Secrets tab); fall back to host `gh auth token`.
+  // Headless deploys typically don't have gh CLI authenticated, but the user
+  // has already configured a PAT via the UI for the GitHub repo picker.
+  const auth = github.getAuth();
+  if (auth?.token) {
+    return res.json({ token: auth.token });
+  }
   try {
     const token = execSync("gh auth token", { encoding: "utf-8", timeout: 10_000 }).trim();
     res.json({ token });
