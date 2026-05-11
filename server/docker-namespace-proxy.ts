@@ -24,7 +24,10 @@ import { paths } from "./paths.js";
 
 const execAsync = promisify(exec);
 
-const DIND_HOST = "127.0.0.1";
+// When the app runs inside a container on a user-defined bridge network
+// (e.g. compose), DIND is reachable via its service hostname, not on the
+// app's loopback. Allow the compose file / operator to override.
+const DIND_HOST = process.env.DIND_HOST || "127.0.0.1";
 const DIND_PORT = 2375;
 const SOCKET_DIR = paths().socketsDir;
 export const SESSION_LABEL = "vivi.session";
@@ -126,12 +129,12 @@ export function stopSessionProxy(sessionId: string): void {
 export function cleanupSessionContainers(sessionId: string): void {
   try {
     const ids = execSync(
-      `${runtime.bin} -H tcp://127.0.0.1:${DIND_PORT} ps -aq --filter label=${SESSION_LABEL}=${sessionId}`,
+      `${runtime.bin} -H tcp://${DIND_HOST}:${DIND_PORT} ps -aq --filter label=${SESSION_LABEL}=${sessionId}`,
       { encoding: "utf-8", timeout: 10_000, stdio: "pipe" },
     ).trim();
     if (ids) {
       execSync(
-        `${runtime.bin} -H tcp://127.0.0.1:${DIND_PORT} rm -f ${ids}`,
+        `${runtime.bin} -H tcp://${DIND_HOST}:${DIND_PORT} rm -f ${ids}`,
         { stdio: "pipe", timeout: 15_000 },
       );
       console.log(`[docker-proxy:${sessionId}] Removed dind containers for session`);
@@ -145,7 +148,7 @@ export function cleanupSessionContainers(sessionId: string): void {
 export async function listSessionContainers(sessionId: string): Promise<DockerContainerInfo[]> {
   try {
     const { stdout } = await execAsync(
-      `${runtime.bin} -H tcp://127.0.0.1:${DIND_PORT} ps -a --filter label=${SESSION_LABEL}=${sessionId} --format "{{json .}}"`,
+      `${runtime.bin} -H tcp://${DIND_HOST}:${DIND_PORT} ps -a --filter label=${SESSION_LABEL}=${sessionId} --format "{{json .}}"`,
       { encoding: "utf-8", timeout: 10_000 },
     );
     const out = stdout.trim();
@@ -193,7 +196,7 @@ export async function inspectContainer(
   // Sanitize containerId to prevent injection
   const safeId = containerId.replace(/[^a-zA-Z0-9_.-]/g, "");
   const { stdout } = await execAsync(
-    `${runtime.bin} -H tcp://127.0.0.1:${DIND_PORT} inspect ${safeId}`,
+    `${runtime.bin} -H tcp://${DIND_HOST}:${DIND_PORT} inspect ${safeId}`,
     { encoding: "utf-8", timeout: 10_000 },
   );
   const arr = JSON.parse(stdout);
@@ -222,7 +225,7 @@ export async function streamContainerLogs(
   // Validate ownership first
   const safeId = containerId.replace(/[^a-zA-Z0-9_.-]/g, "");
   const { stdout } = await execAsync(
-    `${runtime.bin} -H tcp://127.0.0.1:${DIND_PORT} inspect --format '{{index .Config.Labels "${SESSION_LABEL}"}}' ${safeId}`,
+    `${runtime.bin} -H tcp://${DIND_HOST}:${DIND_PORT} inspect --format '{{index .Config.Labels "${SESSION_LABEL}"}}' ${safeId}`,
     { encoding: "utf-8", timeout: 5_000 },
   );
   if (stdout.trim() !== sessionId) {
@@ -230,7 +233,7 @@ export async function streamContainerLogs(
   }
 
   const proc = spawn(runtime.bin, [
-    "-H", `tcp://127.0.0.1:${DIND_PORT}`,
+    "-H", `tcp://${DIND_HOST}:${DIND_PORT}`,
     "logs", "--follow", "--timestamps", "--tail", String(tail),
     safeId,
   ], { stdio: ["ignore", "pipe", "pipe"] });

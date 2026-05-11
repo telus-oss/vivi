@@ -10,7 +10,10 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { listSessionContainers, SESSION_LABEL, type DockerContainerInfo } from "./docker-namespace-proxy.js";
 import { runtime } from "./runtime.js";
 
-const DIND_HOST = "127.0.0.1";
+// When the app runs inside a container on a user-defined bridge network
+// (e.g. compose), DIND is reachable via its service hostname, not on the
+// app's loopback. Allow the compose file / operator to override.
+const DIND_HOST = process.env.DIND_HOST || "127.0.0.1";
 const DIND_PORT = 2375;
 
 type SessionCallback = (containers: DockerContainerInfo[]) => void;
