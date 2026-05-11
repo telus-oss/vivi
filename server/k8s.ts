@@ -18,8 +18,13 @@ import stream, { PassThrough, Readable } from "node:stream";
 export const NAMESPACE = process.env.VIVI_K8S_NAMESPACE || "vivi";
 const SANDBOX_IMAGE = process.env.VIVI_SANDBOX_IMAGE || "vivi-sandbox:latest";
 const PROXY_IMAGE = process.env.VIVI_PROXY_IMAGE || "vivi-proxy:latest";
+const PODMAN_IMAGE = process.env.VIVI_PODMAN_IMAGE || "quay.io/podman/stable:latest";
 const SANDBOX_CONTAINER_NAME = "sandbox";
+const PODMAN_CONTAINER_NAME = "podman";
 const BUNDLE_INIT_CONTAINER = "bundle-init";
+
+/** Disable the rootless podman DinD sidecar when set to "1" or "0" (default: enabled). */
+const PODMAN_ENABLED = process.env.VIVI_K8S_PODMAN !== "0";
 
 /**
  * Bun's `fetch` (and undici-style fetch in general) does not honor Node's
@@ -436,7 +441,74 @@ export async function createSandboxPod(opts: SandboxPodOptions): Promise<string>
     ...(opts.hostGitEmail ? { HOST_GIT_EMAIL: opts.hostGitEmail } : {}),
     ...(opts.extraEnv || {}),
   };
+  // When podman sidecar is enabled, point the sandbox's `docker` CLI at it.
+  if (PODMAN_ENABLED) {
+    baseEnv.DOCKER_HOST = "unix:///run/podman/podman.sock";
+  }
   const env = Object.entries(baseEnv).map(([name, value]) => ({ name, value }));
+
+  // ── Sandbox container ────────────────────────────────────────────────
+  const sandboxContainer: any = {
+    name: SANDBOX_CONTAINER_NAME,
+    image: SANDBOX_IMAGE,
+    imagePullPolicy: "IfNotPresent",
+    env,
+    tty: true,
+    stdin: true,
+    volumeMounts: [
+      { name: "staging", mountPath: "/staging", readOnly: true },
+      { name: "workspace", mountPath: "/workspace" },
+      // CA cert injected by ensureProxyCa() via a ConfigMap mount
+      { name: "proxy-ca", mountPath: "/proxy-ca", readOnly: true },
+      ...(PODMAN_ENABLED ? [{ name: "podman-sock", mountPath: "/run/podman" }] : []),
+    ],
+  };
+
+  // ── Podman sidecar (rootless DinD replacement) ───────────────────────
+  // Runs `podman system service` listening on a unix socket in a shared
+  // emptyDir. The sandbox sets DOCKER_HOST=unix:///run/podman/podman.sock —
+  // podman's REST API is docker-compatible, so the existing docker CLI works.
+  //
+  // Requirements that may not be satisfied on every cluster:
+  //   - SETUID/SETGID caps (for newuidmap inside the container)
+  //   - Either fuse-overlayfs available, or VFS storage (slow but no deps)
+  //   - userns enabled at the host level (most modern kernels: yes)
+  //
+  // On minikube's docker driver these are typically fine. Disable with
+  // VIVI_K8S_PODMAN=0 for clusters that block these.
+  const podmanContainer: any = {
+    name: PODMAN_CONTAINER_NAME,
+    image: PODMAN_IMAGE,
+    imagePullPolicy: "IfNotPresent",
+    command: [
+      "sh", "-c",
+      // Run podman as root *inside* the container. The container itself is
+      // unprivileged from k8s's POV (no `privileged: true`, no host mounts);
+      // launched sub-containers are confined to podman's own namespace inside
+      // this sidecar. This avoids needing newuidmap / SYS_ADMIN, which most
+      // clusters refuse to grant.
+      // VFS storage driver avoids needing fuse-overlayfs.
+      "exec podman --storage-driver=vfs system service --time=0 unix:///run/podman/podman.sock",
+    ],
+    securityContext: {
+      runAsUser: 0,
+      runAsGroup: 0,
+      allowPrivilegeEscalation: false,
+      capabilities: {
+        // Documented minimum capset for podman-in-container (no `privileged`).
+        // SYS_ADMIN is the big one — required for podman to mount /dev/mqueue
+        // and other OCI-mandated bind mounts for the containers it launches.
+        // The sidecar container itself is still confined by the kubelet's
+        // seccomp profile; only podman's *sub-containers* run with these caps.
+        add: ["SYS_ADMIN", "SYS_RESOURCE", "SETUID", "SETGID", "SYS_CHROOT", "CHOWN", "DAC_OVERRIDE", "FOWNER", "MKNOD", "NET_RAW"],
+      },
+    },
+    volumeMounts: [
+      { name: "podman-sock", mountPath: "/run/podman" },
+      // Persistent (per-pod) storage for image layers + containers
+      { name: "podman-storage", mountPath: "/var/lib/containers/storage" },
+    ],
+  };
 
   await core.createNamespacedPod({
     namespace: NAMESPACE,
@@ -450,35 +522,23 @@ export async function createSandboxPod(opts: SandboxPodOptions): Promise<string>
       },
       spec: {
         restartPolicy: "Never",
-        // No k8s service env auto-injection — sandbox shouldn't know about cluster services.
         enableServiceLinks: false,
         initContainers: [{
           name: BUNDLE_INIT_CONTAINER,
-          // Use the sandbox image (it has bash and basic tools) to avoid a
-          // second image to pull/load.
           image: SANDBOX_IMAGE,
           imagePullPolicy: "IfNotPresent",
           command: ["sh", "-c", "while [ ! -f /staging/.ready ]; do sleep 0.3; done"],
           volumeMounts: [{ name: "staging", mountPath: "/staging" }],
         }],
-        containers: [{
-          name: SANDBOX_CONTAINER_NAME,
-          image: SANDBOX_IMAGE,
-          imagePullPolicy: "IfNotPresent",
-          env,
-          tty: true,
-          stdin: true,
-          volumeMounts: [
-            { name: "staging", mountPath: "/staging", readOnly: true },
-            { name: "workspace", mountPath: "/workspace" },
-            // CA cert injected by ensureProxyCa() via a ConfigMap mount
-            { name: "proxy-ca", mountPath: "/proxy-ca", readOnly: true },
-          ],
-        }],
+        containers: PODMAN_ENABLED ? [sandboxContainer, podmanContainer] : [sandboxContainer],
         volumes: [
           { name: "staging", emptyDir: {} },
           { name: "workspace", emptyDir: {} },
           { name: "proxy-ca", configMap: { name: "proxy-ca", optional: true } },
+          ...(PODMAN_ENABLED ? [
+            { name: "podman-sock", emptyDir: {} },
+            { name: "podman-storage", emptyDir: {} },
+          ] : []),
         ],
       },
     },
@@ -575,6 +635,31 @@ export async function deletePod(podName: string): Promise<void> {
   } catch (err: any) {
     if (err?.code === 404 || err?.response?.statusCode === 404) return;
     console.warn(`[k8s] Failed to delete pod ${podName}: ${err.message}`);
+  }
+}
+
+/**
+ * Delete all port Services owned by a session. Safety net for leaked ports
+ * (e.g. Vivi crashed mid-session). Idempotent.
+ */
+export async function deleteSessionServices(sessionId: string): Promise<void> {
+  const { core } = await clients();
+  try {
+    const svcs = await core.listNamespacedService({
+      namespace: NAMESPACE,
+      labelSelector: `vivi.session=${sessionId}`,
+    });
+    for (const svc of svcs.items) {
+      if (!svc.metadata?.name) continue;
+      await core.deleteNamespacedService({ name: svc.metadata.name, namespace: NAMESPACE }).catch(() => {
+        // best-effort
+      });
+    }
+    if (svcs.items.length > 0) {
+      console.log(`[k8s] Deleted ${svcs.items.length} Service(s) for session ${sessionId}`);
+    }
+  } catch (err: any) {
+    console.warn(`[k8s] Failed to list/delete session Services: ${err.message}`);
   }
 }
 
@@ -728,6 +813,111 @@ export async function readPodLogs(podName: string, tail: number = 200): Promise<
   );
   // kubectl mirrors docker's behaviour — exit 0 + stderr if container has no logs yet.
   return res.stdout.toString("utf-8") + res.stderr.toString("utf-8");
+}
+
+// ---------------------------------------------------------------------------
+// Port forwarding (Service-per-port + kubectl port-forward to bridge to host)
+// ---------------------------------------------------------------------------
+
+/**
+ * Service name for a session's exposed port. Mirrors the existing
+ * `p-<port>-<sessionPrefix>` subdomain naming so logs are easy to correlate.
+ * RFC-1123 service names must be <= 63 chars and lowercase alphanumeric/dashes.
+ */
+function portServiceName(sessionId: string, containerPort: number): string {
+  return `p-${containerPort}-${sessionId.slice(0, 8)}`.toLowerCase();
+}
+
+/**
+ * Create (idempotently) a ClusterIP Service selecting the session's sandbox
+ * Pod, exposing one container port.
+ */
+export async function ensureSandboxPortService(
+  sessionId: string,
+  containerPort: number,
+): Promise<string> {
+  const { core } = await clients();
+  const name = portServiceName(sessionId, containerPort);
+  const body = {
+    metadata: { name, labels: { "vivi.role": "sandbox-port", "vivi.session": sessionId } },
+    spec: {
+      type: "ClusterIP",
+      selector: { "vivi.session": sessionId },
+      ports: [{ port: containerPort, targetPort: containerPort, protocol: "TCP" }],
+    },
+  };
+  try {
+    await core.readNamespacedService({ name, namespace: NAMESPACE });
+    return name;
+  } catch (err: any) {
+    if (err?.code !== 404 && err?.response?.statusCode !== 404) throw err;
+  }
+  await core.createNamespacedService({ namespace: NAMESPACE, body });
+  console.log(`[k8s] Created Service ${name} → :${containerPort}`);
+  return name;
+}
+
+export async function deleteSandboxPortService(
+  sessionId: string,
+  containerPort: number,
+): Promise<void> {
+  const { core } = await clients();
+  const name = portServiceName(sessionId, containerPort);
+  try {
+    await core.deleteNamespacedService({ name, namespace: NAMESPACE });
+    console.log(`[k8s] Deleted Service ${name}`);
+  } catch (err: any) {
+    if (err?.code === 404 || err?.response?.statusCode === 404) return;
+    console.warn(`[k8s] Failed to delete Service ${name}: ${err.message}`);
+  }
+}
+
+export interface K8sPortForwardHandle {
+  /** Stop the kubectl port-forward subprocess. */
+  stop(): void;
+}
+
+/**
+ * Spawn `kubectl port-forward svc/<name> <hostPort>:<containerPort>` and bind
+ * it to `hostBindAddr` (loopback by default). Returns a handle whose `stop()`
+ * kills the subprocess. Does NOT delete the Service — caller must call
+ * `deleteSandboxPortService` separately.
+ */
+export function startPortForward(
+  sessionId: string,
+  containerPort: number,
+  hostPort: number,
+  hostBindAddr: string,
+): K8sPortForwardHandle {
+  const svcName = portServiceName(sessionId, containerPort);
+  const args = [
+    "port-forward",
+    "-n", NAMESPACE,
+    `svc/${svcName}`,
+    `${hostPort}:${containerPort}`,
+    `--address=${hostBindAddr}`,
+  ];
+  const proc = spawn("kubectl", args, { stdio: ["ignore", "pipe", "pipe"] });
+  proc.stdout!.on("data", (c) => {
+    const out = c.toString().trim();
+    if (out) console.log(`[k8s port-forward ${svcName}] ${out}`);
+  });
+  proc.stderr!.on("data", (c) => {
+    const out = c.toString().trim();
+    if (out) console.warn(`[k8s port-forward ${svcName}] stderr: ${out}`);
+  });
+  proc.on("exit", (code) => {
+    if (code !== 0 && code !== null) {
+      console.warn(`[k8s port-forward ${svcName}] exited with code ${code}`);
+    }
+  });
+  return {
+    stop() {
+      try { proc.kill(); } catch {
+        // already dead
+      }
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -462,6 +462,11 @@ export async function stopSession(sessionId: string): Promise<void> {
       await k8sBackend.deletePod(containerName).catch((err: any) => {
         console.warn(`[container:${sessionId}] Failed to delete pod ${containerName}: ${err.message}`);
       });
+      // Safety net: drop any port Services left behind if closeAllPorts missed
+      // some (e.g. server crash mid-session).
+      await k8sBackend.deleteSessionServices(containerRef).catch(() => {
+        // already logged inside
+      });
     } else {
       try {
         execSync(`${runtime.bin} rm -f ${containerName}`, { stdio: "pipe", timeout: 30_000 });

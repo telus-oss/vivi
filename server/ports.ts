@@ -10,6 +10,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { getContainerName } from "./container.js";
 import { runtime } from "./runtime.js";
 import { makeProxyUrl, setServerPort } from "./proxyUrl.js";
+import * as k8sBackend from "./k8s.js";
 
 export { makeProxyUrl, setServerPort };
 
@@ -34,8 +35,12 @@ export interface PortForward {
 }
 
 interface PortForwardInternal extends PortForward {
-  server: net.Server;
-  socatProcesses: Set<ChildProcess>;
+  /** Docker/Podman backend: the local TCP listener that bridges to socat in the sandbox. */
+  server?: net.Server;
+  /** Docker/Podman backend: live socat subprocesses (one per connection). */
+  socatProcesses?: Set<ChildProcess>;
+  /** k8s backend: kubectl port-forward subprocess handle. */
+  k8sForward?: k8sBackend.K8sPortForwardHandle;
 }
 
 const portForwards: Map<string, PortForwardInternal> = new Map();
@@ -93,7 +98,7 @@ function allocateHostPort(): number {
 }
 
 function toPublic(pf: PortForwardInternal): PortForward {
-  const { server, socatProcesses, ...pub } = pf;
+  const { server, socatProcesses, k8sForward, ...pub } = pf;
   return pub;
 }
 
@@ -128,6 +133,47 @@ export function openPort(
   const existing = portForwards.get(key);
   if (existing && existing.status === "active") {
     return toPublic(existing);
+  }
+
+  // ── Kubernetes backend ────────────────────────────────────────────────
+  // Service-per-port + kubectl port-forward as the bridge.
+  // `targetHost` (forwarding into a DinD container's IP) is not supported
+  // yet — would need an extra Service selector pass via podman.
+  if (runtime.backend === "k8s") {
+    if (targetHost) {
+      throw new Error("k8s backend does not yet support forwarding into a launched container's IP");
+    }
+    const hostPort = allocateHostPort();
+    const bindAddr = getPortBindAddress();
+    const displayHost = process.env.HOST || "localhost";
+    const subdomain = makeSubdomain(sessionId, containerPort);
+
+    // ensureSandboxPortService is async but we want this function synchronous
+    // (existing callers — open-port script, gh-wrapper — expect a sync return).
+    // Kick the Service creation in the background; the kubectl port-forward
+    // subprocess will retry until the Service has endpoints.
+    k8sBackend.ensureSandboxPortService(sessionId, containerPort)
+      .catch((err: any) => console.warn(`[ports:k8s] Service ensure failed for :${containerPort}: ${err.message}`));
+
+    const k8sForward = k8sBackend.startPortForward(sessionId, containerPort, hostPort, bindAddr);
+
+    const pf: PortForwardInternal = {
+      sessionId,
+      containerPort,
+      hostPort,
+      proxySubdomain: subdomain,
+      proxyUrl: makeProxyUrl(subdomain),
+      status: "active",
+      createdAt: Date.now(),
+      k8sForward,
+      containerName: containerName_,
+      label,
+      type,
+    };
+    portForwards.set(key, pf);
+    console.log(`[ports] Forwarding ${displayHost}:${hostPort} → svc/p-${containerPort}-${sessionId.slice(0, 8)}:${containerPort} (session ${sessionId})`);
+    notify();
+    return toPublic(pf);
   }
 
   const hostPort = allocateHostPort();
@@ -256,18 +302,28 @@ export function closePort(sessionId: string, containerPort: number): boolean {
 
   pf.status = "closing";
 
-  // Kill all active socat processes
-  for (const proc of pf.socatProcesses) {
-    try { proc.kill(); } catch (err: any) {
-      console.warn(`[ports] Failed to kill socat process: ${err.message}`);
+  if (pf.k8sForward) {
+    // k8s backend: stop the port-forward subprocess + remove the Service.
+    pf.k8sForward.stop();
+    k8sBackend.deleteSandboxPortService(sessionId, containerPort).catch((err: any) => {
+      console.warn(`[ports:k8s] Failed to delete Service: ${err.message}`);
+    });
+  } else {
+    // docker/podman backend: kill all live socat processes, close TCP server.
+    if (pf.socatProcesses) {
+      for (const proc of pf.socatProcesses) {
+        try { proc.kill(); } catch (err: any) {
+          console.warn(`[ports] Failed to kill socat process: ${err.message}`);
+        }
+      }
+      pf.socatProcesses.clear();
+    }
+    if (pf.server) {
+      pf.server.close(() => {
+        console.log(`[ports] Closed forwarding on host port ${pf.hostPort}`);
+      });
     }
   }
-  pf.socatProcesses.clear();
-
-  // Close the TCP server
-  pf.server.close(() => {
-    console.log(`[ports] Closed forwarding on host port ${pf.hostPort}`);
-  });
 
   allocatedHostPorts.delete(pf.hostPort);
   portForwards.delete(key);
