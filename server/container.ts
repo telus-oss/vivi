@@ -27,6 +27,29 @@ import { runtime } from "./runtime.js";
 import * as sandboxImages from "./sandbox-images.js";
 import { paths, toHostPath } from "./paths.js";
 
+/**
+ * Normalize a git remote URL to HTTPS so the in-container MITM proxy can
+ * intercept (and inject credentials for) `git fetch` / `git push`. SSH URLs
+ * pass through the proxy as opaque CONNECT tunnels with no auth injection,
+ * which means the sandbox can't fetch remote-only branches from origin.
+ */
+function normalizeRemoteToHttps(url: string): string {
+  // scp-style: git@host:path/repo.git
+  const scpMatch = url.match(/^[^@:\s]+@([^:\s]+):(.+)$/);
+  if (scpMatch) return `https://${scpMatch[1]}/${scpMatch[2]}`;
+  // ssh://[user@]host[:port]/path
+  if (url.startsWith("ssh://")) {
+    try {
+      const u = new URL(url);
+      const pathPart = u.pathname.replace(/^\/+/, "");
+      return `https://${u.hostname}/${pathPart}`;
+    } catch {
+      return url;
+    }
+  }
+  return url;
+}
+
 export interface SessionConfig {
   repoPath?: string;
   branch?: string;
@@ -178,10 +201,15 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
     let remoteUrl = precomputedRemoteUrl ?? "";
     if (!remoteUrl) {
       try {
-        remoteUrl = execSync("git remote get-url origin", {
+        const raw = execSync("git remote get-url origin", {
           cwd: repoPath, encoding: "utf-8", timeout: 5_000,
         }).trim();
-        console.log(`[container:${id}] Remote URL:`, remoteUrl);
+        remoteUrl = normalizeRemoteToHttps(raw);
+        if (remoteUrl !== raw) {
+          console.log(`[container:${id}] Remote URL (normalized SSH→HTTPS for proxy):`, raw, "→", remoteUrl);
+        } else {
+          console.log(`[container:${id}] Remote URL:`, remoteUrl);
+        }
       } catch {
         console.log(`[container:${id}] No git remote found (fetch won't work in sandbox)`);
       }
