@@ -1221,7 +1221,11 @@ const server = http.createServer((req, res) => {
   if (subdomain) {
     const pf = getPortForwardBySubdomain(subdomain);
     if (pf) {
-      portProxy.web(req, res, { target: `http://127.0.0.1:${pf.hostPort}` });
+      // changeOrigin rewrites the Host header to the target's
+      // host:port (127.0.0.1:hostPort). Without this, dev servers like Vite
+      // that validate the Host header (server.allowedHosts) reject the
+      // request because they see the external subdomain rather than localhost.
+      portProxy.web(req, res, { target: `http://127.0.0.1:${pf.hostPort}`, changeOrigin: true });
       return;
     }
     // Unknown subdomain — return 404
