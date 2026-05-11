@@ -1,0 +1,67 @@
+{{- if .Values.rbac.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vivi-server
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vivi.labels" . | nindent 4 }}
+---
+# Namespace-scoped Role — Vivi server can manage everything it needs inside
+# its own tenant namespace, and NOTHING outside it. This is the security
+# boundary for Layer-1 multi-tenancy.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vivi-server
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vivi.labels" . | nindent 4 }}
+rules:
+  # Pods: full CRUD (sessions are pods)
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/exec", "pods/portforward", "pods/attach"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Services: needed for Service-per-port forwarding
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # ConfigMaps + Secrets: proxy CA, API key placeholders
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # PVCs: profile storage
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Events (for visibility into pod scheduling failures)
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  # Deployments (for the proxy lifecycle, if Vivi manages it directly rather
+  # than via Helm). Permissions kept narrow to the proxy and ensures the
+  # tenant can't redeploy themselves or escalate.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # NetworkPolicies (if Vivi creates them dynamically; usually managed by Helm)
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vivi-server
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vivi.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: vivi-server
+subjects:
+  - kind: ServiceAccount
+    name: vivi-server
+    namespace: {{ .Release.Namespace }}
+{{- end }}

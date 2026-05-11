@@ -1,0 +1,140 @@
+{{- if .Values.viviServer.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vivi-data
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vivi.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if .Values.viviServer.persistence.storageClass }}
+  storageClassName: {{ .Values.viviServer.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.viviServer.persistence.size | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vivi-server
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vivi.labels" . | nindent 4 }}
+    {{- include "vivi.viviServer.selectorLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.viviServer.replicas }}
+  strategy:
+    # Vivi server keeps in-memory session state — a rolling update would
+    # double-attach to the same pods. RecreateOnUpdate is safer.
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "vivi.viviServer.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vivi.viviServer.selectorLabels" . | nindent 8 }}
+        vivi.tenant: {{ include "vivi.tenant" . }}
+    spec:
+      serviceAccountName: vivi-server
+      enableServiceLinks: false
+      containers:
+        - name: vivi-server
+          image: {{ include "vivi.viviServer.image" . }}
+          imagePullPolicy: {{ .Values.viviServer.image.pullPolicy }}
+          env:
+            - name: VIVI_BACKEND
+              value: "k8s"
+            - name: VIVI_K8S_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            # In-cluster mode: use the Pod's ServiceAccount token directly,
+            # don't spawn `kubectl proxy`. (k8s.ts will be updated to honor
+            # this env var.)
+            - name: VIVI_K8S_IN_CLUSTER
+              value: "1"
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: "7700"
+            - name: VIVI_TENANT
+              value: {{ include "vivi.tenant" . }}
+            {{- if .Values.user.displayName }}
+            - name: VIVI_TENANT_DISPLAY_NAME
+              value: {{ .Values.user.displayName | quote }}
+            {{- end }}
+          ports:
+            - containerPort: 7700
+              name: http
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          readinessProbe:
+            httpGet:
+              path: /api/sessions
+              port: 7700
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.viviServer.resources | nindent 12 }}
+      volumes:
+        - name: data
+          {{- if .Values.viviServer.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: vivi-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vivi-server
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vivi.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "vivi.viviServer.selectorLabels" . | nindent 4 }}
+  ports:
+    - port: 7700
+      targetPort: 7700
+      protocol: TCP
+      name: http
+{{- if .Values.viviServer.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vivi-server
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vivi.labels" . | nindent 4 }}
+  {{- with .Values.viviServer.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.viviServer.ingress.className }}
+  ingressClassName: {{ .Values.viviServer.ingress.className }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.viviServer.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vivi-server
+                port:
+                  number: 7700
+  {{- if .Values.viviServer.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.viviServer.ingress.host | quote }}
+      secretName: {{ .Values.viviServer.ingress.tls.secretName | quote }}
+  {{- end }}
+{{- end }}
+{{- end }}

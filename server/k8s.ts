@@ -784,6 +784,18 @@ export async function createPty(
   }
 
   // Windows: no real PTY. Use node:child_process.spawn with pipes.
+  //
+  // We investigated node-pty as a Bun-on-Windows fallback (May 2026) — under
+  // plain Node 24 it works, but under Bun 1.2.5 the native binding's
+  // `startProcess` throws "File not found:" with an empty path string. Bun's
+  // N-API shim doesn't pass JS strings through cleanly to node-pty's
+  // ConPTY/winpty bindings. Bun's own `terminal:` spawn option is POSIX-only
+  // (see https://github.com/oven-sh/bun/issues/25565 — still open as of
+  // v1.3.10, March 2026), so there is no real PTY available in this runtime.
+  //
+  // The pipe fallback below works for non-interactive commands; full TUIs
+  // (Claude Code in particular) need a real PTY — for those, run Vivi under
+  // WSL where Bun's POSIX PTY path takes over.
   const proc = spawn(kubectlPath, args, { stdio: ["pipe", "pipe", "pipe"] });
   proc.stdout!.on("data", (c: Buffer) => onData(decoder.decode(c, { stream: true })));
   proc.stderr!.on("data", (c: Buffer) => onData(decoder.decode(c, { stream: true })));

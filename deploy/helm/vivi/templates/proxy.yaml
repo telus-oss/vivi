@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vivi.labels" . | nindent 4 }}
+    {{- include "vivi.proxy.selectorLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.proxy.replicas }}
+  selector:
+    matchLabels:
+      {{- include "vivi.proxy.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vivi.proxy.selectorLabels" . | nindent 8 }}
+        vivi.tenant: {{ include "vivi.tenant" . }}
+    spec:
+      # Suppress k8s auto-injected service env vars that collide with the
+      # proxy's PROXY_PORT config var (see server/k8s.ts for the bug).
+      enableServiceLinks: false
+      containers:
+        - name: proxy
+          image: {{ include "vivi.proxy.image" . }}
+          imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
+          env:
+            - name: HOST_SERVER
+              value: {{ .Values.proxy.hostServer | quote }}
+          ports:
+            - containerPort: 7443
+              name: https-proxy
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 7443
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.proxy.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vivi.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "vivi.proxy.selectorLabels" . | nindent 4 }}
+  ports:
+    - port: 7443
+      targetPort: 7443
+      protocol: TCP

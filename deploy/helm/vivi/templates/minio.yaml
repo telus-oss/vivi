@@ -1,0 +1,131 @@
+{{- if .Values.minio.enabled }}
+# In-namespace MinIO Deployment — S3-compatible blob store used by the Vivi
+# server as the backing store for profile snapshots (and any future
+# user-uploaded artifacts). One per tenant; data stays in the tenant's
+# namespace. Disable and point Vivi at an external S3 if you'd rather not
+# run MinIO in-cluster.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vivi-minio
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vivi.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  rootUser: {{ .Values.minio.rootUser | default (printf "vivi-%s" (include "vivi.tenant" .)) | quote }}
+  # Helm `randAlphaNum` is regenerated on every upgrade — that would rotate
+  # the password and break Vivi. Persist via lookup of the existing Secret.
+  {{- $existing := lookup "v1" "Secret" .Release.Namespace "vivi-minio" }}
+  {{- if and $existing $existing.data $existing.data.rootPassword }}
+  rootPassword: {{ index $existing.data "rootPassword" | b64dec | quote }}
+  {{- else if .Values.minio.rootPassword }}
+  rootPassword: {{ .Values.minio.rootPassword | quote }}
+  {{- else }}
+  rootPassword: {{ randAlphaNum 32 | quote }}
+  {{- end }}
+  bucket: {{ .Values.minio.bucket | quote }}
+---
+{{- if .Values.minio.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vivi-minio
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vivi.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- if .Values.minio.persistence.storageClass }}
+  storageClassName: {{ .Values.minio.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.minio.persistence.size | quote }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vivi-minio
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vivi.labels" . | nindent 4 }}
+    app: minio
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+        vivi.tenant: {{ include "vivi.tenant" . }}
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: minio
+          image: {{ .Values.minio.image.repository }}:{{ .Values.minio.image.tag }}
+          imagePullPolicy: {{ .Values.minio.image.pullPolicy }}
+          args:
+            - server
+            - /data
+            - --console-address
+            - ":9001"
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: vivi-minio
+                  key: rootUser
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vivi-minio
+                  key: rootPassword
+          ports:
+            - containerPort: 9000
+              name: api
+            - containerPort: 9001
+              name: console
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: 9000
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          {{- if .Values.minio.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: vivi-minio
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vivi-minio
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vivi.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: minio
+  ports:
+    - port: 9000
+      targetPort: 9000
+      protocol: TCP
+      name: api
+    - port: 9001
+      targetPort: 9001
+      protocol: TCP
+      name: console
+{{- end }}

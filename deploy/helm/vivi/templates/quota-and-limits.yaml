@@ -1,0 +1,33 @@
+{{- if .Values.resourceQuota.enabled }}
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: vivi-quota
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vivi.labels" . | nindent 4 }}
+spec:
+  hard:
+    {{- range $key, $value := .Values.resourceQuota.hard }}
+    {{ $key }}: {{ $value | quote }}
+    {{- end }}
+{{- end }}
+{{- if .Values.limitRange.enabled }}
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: vivi-defaults
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vivi.labels" . | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: {{ .Values.limitRange.defaultLimit.cpu | quote }}
+        memory: {{ .Values.limitRange.defaultLimit.memory | quote }}
+      defaultRequest:
+        cpu: {{ .Values.limitRange.defaultRequest.cpu | quote }}
+        memory: {{ .Values.limitRange.defaultRequest.memory | quote }}
+{{- end }}

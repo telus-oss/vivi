@@ -1,0 +1,15 @@
+apiVersion: v2
+name: vivi
+description: |
+  Per-user namespace for Vivi — sandboxed AI coding agent.
+  Templates one namespace per Helm release (one per user). Inside the
+  namespace: proxy Deployment + Service, RBAC for the Vivi server, optional
+  Vivi server Deployment + Ingress, ResourceQuota, LimitRange, NetworkPolicy.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - vivi
+  - sandbox
+  - claude
+  - ai-agent

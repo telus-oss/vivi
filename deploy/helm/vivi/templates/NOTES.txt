@@ -1,0 +1,53 @@
+Vivi tenant "{{ include "vivi.tenant" . }}" installed in namespace {{ .Release.Namespace }}.
+
+Resources created:
+  - ServiceAccount/vivi-server  + Role + RoleBinding  (scoped to this namespace)
+{{- if .Values.resourceQuota.enabled }}
+  - ResourceQuota/vivi-quota
+{{- end }}
+{{- if .Values.limitRange.enabled }}
+  - LimitRange/vivi-defaults
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+  - NetworkPolicy: default-deny, sandbox-egress, proxy-rules, vivi-server-rules
+{{- end }}
+  - Deployment/proxy + Service/proxy
+{{- if .Values.viviServer.enabled }}
+  - Deployment/vivi-server + Service/vivi-server  (+ PVC/vivi-data)
+{{- if .Values.viviServer.ingress.enabled }}
+  - Ingress/vivi-server -> {{ .Values.viviServer.ingress.host }}
+{{- end }}
+{{- end }}
+{{- if .Values.minio.enabled }}
+  - Deployment/vivi-minio + Service/vivi-minio  (S3-compatible profile store)
+{{- end }}
+
+{{- if .Values.viviServer.enabled }}
+
+Reach the UI:
+{{- if .Values.viviServer.ingress.enabled }}
+
+  https://{{ .Values.viviServer.ingress.host }}/
+
+{{- else }}
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/vivi-server 7700:7700
+  open http://localhost:7700/
+
+{{- end }}
+{{- else }}
+
+You opted out of the in-cluster Vivi server. To run Vivi from your machine
+against this namespace:
+
+  VIVI_BACKEND=k8s VIVI_K8S_NAMESPACE={{ .Release.Namespace }} bun dev
+
+Make sure your kubeconfig has access to this namespace (the chart's RBAC is
+for the in-cluster ServiceAccount; your user account needs its own grant).
+
+{{- end }}
+
+Tear down with:
+
+  helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}
+  kubectl delete ns {{ .Release.Namespace }}

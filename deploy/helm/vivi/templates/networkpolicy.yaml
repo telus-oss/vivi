@@ -1,0 +1,110 @@
+{{- if .Values.networkPolicy.enabled }}
+# Default-deny: every pod in this namespace is sealed off unless an explicit
+# rule below opens a path. Requires a CNI that enforces NetworkPolicy
+# (kindnet on default minikube does NOT — switch to Calico or Cilium).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vivi.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Sandbox pods may only talk outbound to the proxy + (optionally) DNS.
+# This is the network-level enforcement of Vivi's "all traffic through MITM"
+# guarantee — without it, a compromised sandbox could phone home over UDP.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vivi.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      vivi.role: sandbox
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: proxy
+      ports:
+        - protocol: TCP
+          port: 7443
+    {{- if .Values.networkPolicy.allowDns }}
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- end }}
+---
+# Proxy needs egress to the internet (allowlisted external API endpoints)
+# AND ingress from sandbox pods + the Vivi server.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: proxy-rules
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vivi.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: proxy
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              vivi.role: sandbox
+        - podSelector:
+            matchLabels:
+              app: vivi-server
+      ports:
+        - protocol: TCP
+          port: 7443
+  # No egress restriction — the proxy needs to reach allowlisted external APIs.
+  # Allowlist enforcement happens INSIDE the proxy, not at the network layer.
+  egress:
+    - {}
+---
+# Vivi server: ingress from ingress-controller (or any), egress to the proxy
+# and to the Kubernetes API.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vivi-server-rules
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vivi.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: vivi-server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from: []   # any source — Ingress controller decides
+      ports:
+        - protocol: TCP
+          port: 7700
+  egress:
+    - {}  # unrestricted; primarily kube-apiserver + proxy + sandboxes in this NS
+{{- end }}

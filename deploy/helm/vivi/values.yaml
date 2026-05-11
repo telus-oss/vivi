@@ -1,0 +1,147 @@
+# Vivi per-user namespace values.
+#
+# Recommended install pattern, one Helm release per user:
+#
+#   helm install alice deploy/helm/vivi \
+#     --namespace vivi-user-alice --create-namespace \
+#     --set user.name=alice
+#
+# The release name is the tenant identifier and shows up in resource labels.
+
+user:
+  # Tenant identifier. Used in labels and (optionally) as part of host names.
+  # Defaults to the Helm release name if unset.
+  name: ""
+
+  # Human-readable display name shown in Vivi's UI title.
+  displayName: ""
+
+# ──────────────────────────────────────────────────────────────────────────
+# Resource quota — caps the namespace's CPU/memory/Pod/PVC counts.
+# Disable for unlimited tenants (e.g. self-hosted single-user).
+# ──────────────────────────────────────────────────────────────────────────
+resourceQuota:
+  enabled: true
+  hard:
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    persistentvolumeclaims: "10"
+    pods: "20"
+    services: "30"
+
+# Default request/limit applied to every container that doesn't set its own.
+limitRange:
+  enabled: true
+  defaultRequest:
+    cpu: "100m"
+    memory: 256Mi
+  defaultLimit:
+    cpu: "1"
+    memory: 1Gi
+
+# NetworkPolicy — default-deny ingress/egress on every pod, with selective
+# allow rules. Requires a CNI that enforces NetworkPolicy (Calico, Cilium,
+# weave-net — NOT minikube's default kindnet/bridge).
+networkPolicy:
+  enabled: false
+  # Allow DNS lookups to kube-system DNS (UDP/TCP 53). Required for cluster
+  # service name resolution.
+  allowDns: true
+
+# ──────────────────────────────────────────────────────────────────────────
+# Proxy — vivi-proxy Deployment + Service.
+# Each tenant gets their own — secrets stored in the namespace, not shared.
+# ──────────────────────────────────────────────────────────────────────────
+proxy:
+  image:
+    repository: ghcr.io/telus-oss/vivi-proxy
+    tag: "" # defaults to chart's appVersion if empty
+    pullPolicy: IfNotPresent
+  replicas: 1
+  resources:
+    requests:
+      cpu: "100m"
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  # Where the proxy reaches the Vivi server. Default points back into the
+  # cluster at vivi-server:7700 in this same namespace. Set to a host URL
+  # (e.g. "host.minikube.internal:7700") for host-side Vivi server mode.
+  hostServer: "vivi-server:7700"
+
+# ──────────────────────────────────────────────────────────────────────────
+# Vivi server — Deployment + Service + optional Ingress.
+# Set enabled: false if the user runs Vivi on their own machine and only
+# wants the cluster-side resources (proxy, RBAC, quota).
+# ──────────────────────────────────────────────────────────────────────────
+viviServer:
+  enabled: true
+  image:
+    repository: ghcr.io/telus-oss/vivi-app
+    tag: "" # defaults to chart's appVersion if empty
+    pullPolicy: IfNotPresent
+  replicas: 1
+  resources:
+    requests:
+      cpu: "200m"
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  # Persistent storage for the SQLite database + uploaded staging bundles.
+  persistence:
+    enabled: true
+    storageClass: ""  # blank = cluster default
+    size: 5Gi
+
+  ingress:
+    enabled: false
+    className: ""
+    # Annotations for OIDC auth (oauth2-proxy in front of the Service).
+    # Adjust the auth-url / auth-signin annotations to point at your auth setup.
+    annotations: {}
+      # nginx.ingress.kubernetes.io/auth-url: "https://auth.example.com/oauth2/auth"
+      # nginx.ingress.kubernetes.io/auth-signin: "https://auth.example.com/oauth2/start?rd=$escaped_request_uri"
+    host: ""   # e.g. alice.vivi.example.com
+    tls:
+      enabled: false
+      secretName: ""
+
+# ──────────────────────────────────────────────────────────────────────────
+# RBAC — ServiceAccount that the Vivi server uses to manage Pods, Services,
+# ConfigMaps, etc. *inside this namespace*. Scope is intentionally narrow:
+# no cluster-wide permissions, no cross-namespace access.
+# ──────────────────────────────────────────────────────────────────────────
+rbac:
+  create: true
+
+# ──────────────────────────────────────────────────────────────────────────
+# Profile storage — optional in-namespace MinIO Deployment used as an
+# S3-compatible profile backing store. Disable to wire an external S3 instead.
+# ──────────────────────────────────────────────────────────────────────────
+minio:
+  enabled: false
+  image:
+    repository: quay.io/minio/minio
+    tag: latest
+    pullPolicy: IfNotPresent
+  persistence:
+    enabled: true
+    storageClass: ""
+    size: 10Gi
+  # Auto-generated when blank.
+  rootUser: ""
+  rootPassword: ""
+  bucket: profiles
+
+# ──────────────────────────────────────────────────────────────────────────
+# Pod security profile applied to all sandbox/proxy Pods.
+# ──────────────────────────────────────────────────────────────────────────
+podSecurity:
+  # Apply pod-security.kubernetes.io/enforce label to the namespace.
+  enforce: "baseline"  # "restricted" rejects the podman sidecar's CAPs.
+  warn: "baseline"
+  audit: "baseline"
