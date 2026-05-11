@@ -509,6 +509,12 @@ export interface SandboxPodOptions {
   hostGitEmail?: string;
   /** Extra env (sandbox secrets, etc.) */
   extraEnv?: Record<string, string>;
+  /** Repo name (for annotation, used by orphan-pod recovery on restart) */
+  repoName?: string;
+  /** Repo path on host (for annotation, optional in k8s) */
+  repoPath?: string;
+  /** Profile id used to seed the sandbox (for annotation) */
+  profileId?: string;
 }
 
 export function getPodName(sessionId: string): string {
@@ -658,6 +664,17 @@ export async function createSandboxPod(opts: SandboxPodOptions): Promise<string>
         labels: {
           "vivi.role": "sandbox",
           "vivi.session": opts.sessionId,
+        },
+        // Free-form session metadata that wouldn't fit label charset/length
+        // limits (branch names can have `/`, paths have `/`, repo URLs etc.).
+        // Used by listSandboxPods() to rebuild the active_containers row when
+        // restoreSessions() finds an orphan pod with no DB record.
+        annotations: {
+          "vivi.io/branch": opts.branch || "",
+          "vivi.io/repo-name": opts.repoName || "",
+          "vivi.io/repo-path": opts.repoPath || "",
+          "vivi.io/remote-url": opts.remoteUrl || "",
+          ...(opts.profileId ? { "vivi.io/profile-id": opts.profileId } : {}),
         },
       },
       spec: {
@@ -815,6 +832,48 @@ export async function getPodPhase(podName: string): Promise<"Pending" | "Running
     if (err?.code === 404 || err?.response?.statusCode === 404) return "Missing";
     throw err;
   }
+}
+
+export interface SandboxPodInfo {
+  podName: string;
+  sessionId: string;
+  phase: string;
+  branch: string;
+  repoName: string;
+  repoPath: string;
+  remoteUrl: string;
+  profileId: string | null;
+  startedAt: string;
+}
+
+/**
+ * List every sandbox pod in the namespace. Used by restoreSessions() to
+ * pick up pods that exist in k8s but have no `active_containers` DB row
+ * (e.g. a previous server crash deleted the row but the kubectl delete
+ * failed, or the DB was wiped while pods kept running).
+ */
+export async function listSandboxPods(): Promise<SandboxPodInfo[]> {
+  const { core } = await clients();
+  const result = await core.listNamespacedPod({
+    namespace: NAMESPACE,
+    labelSelector: "vivi.role=sandbox",
+  });
+  return (result.items || []).map((pod) => {
+    const meta = pod.metadata || {};
+    const annotations = meta.annotations || {};
+    const labels = meta.labels || {};
+    return {
+      podName: meta.name || "",
+      sessionId: labels["vivi.session"] || (meta.name || "").replace(/^vivi-sandbox-/, ""),
+      phase: pod.status?.phase || "Unknown",
+      branch: annotations["vivi.io/branch"] || "",
+      repoName: annotations["vivi.io/repo-name"] || "",
+      repoPath: annotations["vivi.io/repo-path"] || "",
+      remoteUrl: annotations["vivi.io/remote-url"] || "",
+      profileId: annotations["vivi.io/profile-id"] || null,
+      startedAt: (meta.creationTimestamp ? new Date(meta.creationTimestamp).toISOString() : new Date().toISOString()),
+    };
+  });
 }
 
 export async function deletePod(podName: string): Promise<void> {

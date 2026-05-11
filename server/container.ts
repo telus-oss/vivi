@@ -280,6 +280,9 @@ export async function startSession(config: SessionConfig): Promise<SessionState>
         hostGitName,
         hostGitEmail,
         extraEnv: getSandboxEnv(),
+        repoName,
+        repoPath,
+        profileId: config.profileId,
       });
 
       await k8sBackend.waitForSandboxReady(podName, SANDBOX_READY_TIMEOUT);
@@ -753,6 +756,51 @@ export async function restoreSessions(): Promise<void> {
     } catch (err: any) {
       console.log(`[container:${row.session_id}] Container ${containerName} not found (${err.message}), cleaning up`);
       db.prepare("DELETE FROM active_containers WHERE session_id = ?").run(row.session_id);
+    }
+  }
+
+  // ── Orphan-pod recovery (k8s only) ──────────────────────────────────────
+  // Sandbox pods can outlive their active_containers row if a previous
+  // stopSession() race-deleted the row but the pod delete failed (or if
+  // the DB was wiped while pods kept running). Rehydrate any sandbox pods
+  // we found in the cluster that aren't in the sessions map yet — the
+  // annotations on pod metadata carry the branch + repo info we need.
+  if (runtime.backend === "k8s") {
+    try {
+      const pods = await k8sBackend.listSandboxPods();
+      for (const pod of pods) {
+        if (sessions.has(pod.sessionId)) continue;
+        if (pod.phase !== "Running" && pod.phase !== "Pending") {
+          console.log(`[container:${pod.sessionId}] Orphan pod ${pod.podName} phase=${pod.phase}, deleting`);
+          await k8sBackend.deletePod(pod.podName).catch(() => {});
+          continue;
+        }
+        const session: SessionState = {
+          id: pod.sessionId,
+          status: pod.phase === "Running" ? "running" : "starting",
+          repoPath: pod.repoPath || null,
+          repoName: pod.repoName || null,
+          branch: pod.branch || null,
+          containerId: pod.podName,
+          containerRef: pod.sessionId,
+          error: null,
+          startedAt: pod.startedAt,
+        };
+        sessions.set(pod.sessionId, session);
+        // Re-insert the active_containers row so subsequent restarts see it.
+        db.prepare(`
+          INSERT OR REPLACE INTO active_containers
+            (session_id, container_ref, container_id, repo_path, repo_name, branch, started_at, profile_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          pod.sessionId, pod.sessionId, pod.podName,
+          pod.repoPath, pod.repoName, pod.branch,
+          pod.startedAt, pod.profileId,
+        );
+        console.log(`[container:${pod.sessionId}] Recovered orphan pod ${pod.podName} (${pod.repoName || "unknown repo"}@${pod.branch || "?"})`);
+      }
+    } catch (err: any) {
+      console.warn(`[restoreSessions] Orphan-pod scan failed: ${err.message}`);
     }
   }
 }
