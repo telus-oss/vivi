@@ -522,6 +522,27 @@ export function getPodName(sessionId: string): string {
 }
 
 /**
+ * Build a k8s `resources` block from individually-tunable request/limit
+ * strings. Treats the literal "none" (or an empty string) as "omit this
+ * field", giving operators a way to opt out of cgroup hard caps — useful
+ * when they want docker-style "swap before OOM" rather than k8s's
+ * default OOMKill-at-limit semantics.
+ */
+function buildResources(opts: {
+  cpuRequest: string; memoryRequest: string;
+  cpuLimit: string; memoryLimit: string;
+}): { requests: Record<string, string>; limits: Record<string, string> } {
+  const requests: Record<string, string> = {};
+  const limits: Record<string, string> = {};
+  const keep = (v: string) => v && v !== "none";
+  if (keep(opts.cpuRequest)) requests.cpu = opts.cpuRequest;
+  if (keep(opts.memoryRequest)) requests.memory = opts.memoryRequest;
+  if (keep(opts.cpuLimit)) limits.cpu = opts.cpuLimit;
+  if (keep(opts.memoryLimit)) limits.memory = opts.memoryLimit;
+  return { requests, limits };
+}
+
+/**
  * Create a sandbox pod with:
  *   - emptyDir at /staging where the bundle gets dropped
  *   - emptyDir at /workspace for the agent's working tree
@@ -562,18 +583,12 @@ export async function createSandboxPod(opts: SandboxPodOptions): Promise<string>
   const env = Object.entries(baseEnv).map(([name, value]) => ({ name, value }));
 
   // ── Sandbox container ────────────────────────────────────────────────
-  // Per-session resources are a balance between two failure modes:
-  //  1. Too low → OOMKill when Claude Code + code-server + agent workload
-  //     pushes past the limit (saw this at 1Gi default from chart LimitRange).
-  //  2. Too high → on small hosts running other workloads, the cumulative
-  //     committed memory across sandbox+podman can drive the host into
-  //     swap-thrashing (saw this at 4Gi sandbox + 2Gi podman on a 12Gi
-  //     box also running 8Gi-RAM minecraft; load avg hit 188).
-  //
-  // 2Gi/1Gi is a defensive default that survives a typical session on a
-  // self-host. Bigger clusters can bump via VIVI_K8S_SANDBOX_MEMORY_LIMIT
-  // — operators should size based on (host RAM - other-stack memory)
-  // divided by expected concurrent sessions.
+  // CPU/memory request + limit defaults are defensive (2Gi/1Gi) to survive
+  // a typical session on a small self-host. Operators can opt out of the
+  // memory cap by setting VIVI_K8S_SANDBOX_MEMORY_LIMIT="none" — useful on
+  // hosts with plenty of swap where docker-style "use swap before OOM"
+  // behavior is preferred over k8s hard-kill semantics. Same sentinel
+  // applies to CPU limit.
   const sandboxContainer: any = {
     name: SANDBOX_CONTAINER_NAME,
     image: SANDBOX_IMAGE,
@@ -581,16 +596,12 @@ export async function createSandboxPod(opts: SandboxPodOptions): Promise<string>
     env,
     tty: true,
     stdin: true,
-    resources: {
-      requests: {
-        cpu: process.env.VIVI_K8S_SANDBOX_CPU_REQUEST || "100m",
-        memory: process.env.VIVI_K8S_SANDBOX_MEMORY_REQUEST || "256Mi",
-      },
-      limits: {
-        cpu: process.env.VIVI_K8S_SANDBOX_CPU_LIMIT || "1",
-        memory: process.env.VIVI_K8S_SANDBOX_MEMORY_LIMIT || "2Gi",
-      },
-    },
+    resources: buildResources({
+      cpuRequest: process.env.VIVI_K8S_SANDBOX_CPU_REQUEST ?? "100m",
+      memoryRequest: process.env.VIVI_K8S_SANDBOX_MEMORY_REQUEST ?? "256Mi",
+      cpuLimit: process.env.VIVI_K8S_SANDBOX_CPU_LIMIT ?? "1",
+      memoryLimit: process.env.VIVI_K8S_SANDBOX_MEMORY_LIMIT ?? "2Gi",
+    }),
     volumeMounts: [
       { name: "staging", mountPath: "/staging", readOnly: true },
       { name: "workspace", mountPath: "/workspace" },
@@ -639,16 +650,12 @@ export async function createSandboxPod(opts: SandboxPodOptions): Promise<string>
         add: ["SYS_ADMIN", "SYS_RESOURCE", "SETUID", "SETGID", "SYS_CHROOT", "CHOWN", "DAC_OVERRIDE", "FOWNER", "MKNOD", "NET_RAW"],
       },
     },
-    resources: {
-      requests: {
-        cpu: process.env.VIVI_K8S_PODMAN_CPU_REQUEST || "50m",
-        memory: process.env.VIVI_K8S_PODMAN_MEMORY_REQUEST || "128Mi",
-      },
-      limits: {
-        cpu: process.env.VIVI_K8S_PODMAN_CPU_LIMIT || "1",
-        memory: process.env.VIVI_K8S_PODMAN_MEMORY_LIMIT || "1Gi",
-      },
-    },
+    resources: buildResources({
+      cpuRequest: process.env.VIVI_K8S_PODMAN_CPU_REQUEST ?? "50m",
+      memoryRequest: process.env.VIVI_K8S_PODMAN_MEMORY_REQUEST ?? "128Mi",
+      cpuLimit: process.env.VIVI_K8S_PODMAN_CPU_LIMIT ?? "1",
+      memoryLimit: process.env.VIVI_K8S_PODMAN_MEMORY_LIMIT ?? "1Gi",
+    }),
     volumeMounts: [
       { name: "podman-sock", mountPath: "/run/podman" },
       // Persistent (per-pod) storage for image layers + containers

@@ -137,12 +137,18 @@ viviServer:
   sandboxReadyTimeoutMs: 120000
 
   # Extra env vars to set on the vivi-server container. Useful for tuning
-  # things like sandbox memory limits without changing chart code, e.g.:
+  # things like sandbox resource limits without changing chart code:
+  #
+  #   # Tighten the cap:
   #   extraEnv:
-  #     - name: VIVI_K8S_SANDBOX_MEMORY_LIMIT
-  #       value: "4Gi"
-  #     - name: VIVI_K8S_PODMAN_MEMORY_LIMIT
-  #       value: "2Gi"
+  #     - { name: VIVI_K8S_SANDBOX_MEMORY_LIMIT, value: "4Gi" }
+  #
+  #   # Opt out of the cap entirely (kernel manages via swap, docker-style).
+  #   # Requires limitRange.enabled=false; otherwise the LimitRange default
+  #   # is re-injected:
+  #   extraEnv:
+  #     - { name: VIVI_K8S_SANDBOX_MEMORY_LIMIT, value: "none" }
+  #     - { name: VIVI_K8S_PODMAN_MEMORY_LIMIT,  value: "none" }
   extraEnv: []
 
   # Base URL the UI uses for forwarded sandbox ports. The port-forward
